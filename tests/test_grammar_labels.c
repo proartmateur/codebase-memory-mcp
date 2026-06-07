@@ -107,7 +107,7 @@ static const LabelGolden LABEL_GOLDENS[] = {
     {"tcl", "Function:2,Module:1"},
     {"powershell", "Function:2,Module:1"},
     {"r", "Function:2,Module:1"},
-    {"julia", "Function:1,Module:1"},
+    {"julia", "Class:1,Function:1,Module:1"},
     {"matlab", "Function:2,Module:1"},
     {"ada", "Function:1,Module:1"},
     {"agda", "Function:1,Module:1"},

@@ -760,13 +760,15 @@ TEST(probe_gitignore_module_only) {
         "dist/\n"
         ".DS_Store\n");
     ASSERT_TRUE(m.ok);
-    /* REAL BUG (NEW class — file-index routing gap): the gitignore grammar +
-     * histogram (grammar_labels gitignore=Module:1) work via DIRECT
-     * extraction, but ".gitignore" has no FILENAME_TABLE/EXT_TABLE entry
-     * (cbm_language_for_filename(".gitignore") → ext ".gitignore" → not in
-     * EXT_TABLE → CBM_LANG_COUNT), so file-based index_repository never
-     * routes it → 0 Module nodes.  Routing/registration gap.  RED. */
-    ASSERT_TRUE(m.modules == 1); /* REAL BUG — .gitignore not routed by file index */
+    /* CONTRACT (corrected): unlike .gitattributes, ".gitignore" is intentionally
+     * NOT indexed as a source file — the cbm_discover walker consumes it as
+     * ignore-rule input (see test_discover.c discover_with_gitignore /
+     * discover_gitignore_dir_excluded_issue234 / discover_cbmignore_stacks,
+     * which assert .gitignore is excluded from the discovered file set). The
+     * gitignore grammar exists for DIRECT extraction only; via the file walker
+     * the ignore-control role wins by design, so it yields 0 nodes. Routing it
+     * to CBM_LANG_GITIGNORE would regress those three established tests. */
+    ASSERT_TRUE(m.modules == 0); /* .gitignore consumed as ignore-rules, not indexed (by design) */
     ASSERT_TRUE(m.variables == 0);
     PASS();
 }

@@ -773,7 +773,9 @@ static const inherit_case_t cpp_cases[] = {
         "template<typename T> class Stack : public std::vector<T> { };",
         "Stack",
         {"std::vector", NULL},
-        {"public", "template", ":", NULL},
+        /* qualified base: `::` is legitimate, so the bare-`:` separator-leak
+         * guard does not apply here (it would match inside `std::vector`). */
+        {"public", "template", NULL},
         1
     },
     /* ── CRTP pattern ────────────────────────────────────────────── */
@@ -820,7 +822,8 @@ static const inherit_case_t cpp_cases[] = {
         "class MyStream : public std::ostream { public: MyStream() : std::ostream(nullptr) {} };",
         "MyStream",
         {"std::ostream", NULL},
-        {"public", ":", NULL},
+        /* qualified base: bare-`:` guard omitted (matches inside `std::ostream`). */
+        {"public", NULL},
         1
     },
     /* ── protected base ──────────────────────────────────────────── */
@@ -848,7 +851,8 @@ static const inherit_case_t cpp_cases[] = {
         "public: AppError(const char* m) : std::runtime_error(m) {} };",
         "AppError",
         {"std::runtime_error", NULL},
-        {"public", ":", NULL},
+        /* qualified base: bare-`:` guard omitted (matches inside `std::runtime_error`). */
+        {"public", NULL},
         1
     },
     /* ── template class with multiple template base types ────────── */
@@ -885,7 +889,8 @@ static const inherit_case_t cpp_cases[] = {
         "struct MyVisitor : public boost::static_visitor<int> { int operator()(int x) { return x; } };",
         "MyVisitor",
         {"boost::static_visitor", NULL},
-        {"public", ":", NULL},
+        /* qualified base: bare-`:` guard omitted (matches inside `boost::static_visitor`). */
+        {"public", NULL},
         1
     },
     /* ── policy-based design (two template base policies) ────────── */

@@ -76,10 +76,23 @@ struct cbm_registry {
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
-/* Extract last dot-separated segment from a QN. Returns pointer into s. */
+/* Extract the last path segment from a QN. Returns pointer into s.
+ * Recognizes both '.' (most langs) and Rust/C++ '::' separators, so a
+ * scoped callee like "lib::square" yields "square" rather than the whole
+ * scoped path (which never matches the by-name index). */
 static const char *simple_name(const char *qn) {
-    const char *last = strrchr(qn, '.');
-    return last ? last + SKIP_ONE : qn;
+    const char *dot = strrchr(qn, '.');
+    const char *seg = dot ? dot + SKIP_ONE : qn;
+    /* Find the last "::" and, if it sits after the last '.', use the
+     * segment following it. */
+    const char *colons = NULL;
+    for (const char *p = qn; (p = strstr(p, "::")) != NULL; p += 2) {
+        colons = p;
+    }
+    if (colons && colons + 2 > seg) {
+        seg = colons + 2;
+    }
+    return seg;
 }
 
 /* Extract everything before the last dot. Returns heap-allocated string. */
@@ -632,18 +645,29 @@ cbm_resolution_t cbm_registry_resolve(const cbm_registry_t *r, const char *calle
         }
     }
 
-    /* Split callee: "pkg.Func" → prefix="pkg", suffix="Func" */
+    /* Split callee at the first path separator: "pkg.Func" → prefix="pkg",
+     * suffix="Func".  Rust/C++ use "::" rather than ".", so honor whichever
+     * separator appears first ("lib::square" → prefix="lib", suffix="square").
+     * Both separators are unambiguous, so handling "::" never affects "."-only
+     * callees. */
     char prefix[CBM_SZ_256] = {0};
     const char *suffix = NULL;
     const char *dot = strchr(callee_name, '.');
-    if (dot) {
-        size_t plen = dot - callee_name;
+    const char *colons = strstr(callee_name, "::");
+    const char *sep = dot;
+    size_t sep_len = SKIP_ONE; /* length of '.' */
+    if (colons && (!sep || colons < sep)) {
+        sep = colons;
+        sep_len = 2; /* length of "::" */
+    }
+    if (sep) {
+        size_t plen = sep - callee_name;
         if (plen >= sizeof(prefix)) {
             plen = sizeof(prefix) - SKIP_ONE;
         }
         memcpy(prefix, callee_name, plen);
         prefix[plen] = '\0';
-        suffix = dot + SKIP_ONE;
+        suffix = sep + sep_len;
     } else {
         snprintf(prefix, sizeof(prefix), "%s", callee_name);
     }

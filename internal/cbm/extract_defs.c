@@ -1279,7 +1279,17 @@ static char *extract_cpp_base_text(CBMArena *a, TSNode bc, const char *source) {
     }
     if (strcmp(bk, "type_identifier") == 0 || strcmp(bk, "qualified_identifier") == 0 ||
         strcmp(bk, "scoped_identifier") == 0) {
-        return cbm_node_text(a, bc, source);
+        /* A qualified base may embed a template_type in its `name` field
+         * (e.g. `std::vector<T>`), so the raw text carries `<...>` args.
+         * Strip the generic argument list to keep the bare qualified name. */
+        char *t = cbm_node_text(a, bc, source);
+        if (t) {
+            char *angle = strchr(t, '<');
+            if (angle) {
+                *angle = '\0';
+            }
+        }
+        return t;
     }
     if (strcmp(bk, "template_type") == 0) {
         TSNode tname = ts_node_child_by_field_name(bc, TS_FIELD("name"));
@@ -1413,6 +1423,176 @@ static const char **extract_csharp_base_list(CBMArena *a, TSNode node, const cha
     return NULL;
 }
 
+// Append a base name (generic args stripped) to out[] if non-empty.
+static void push_base_text(CBMArena *a, TSNode n, const char *source, const char **out,
+                           int out_cap, int *count) {
+    if (*count >= out_cap) {
+        return;
+    }
+    char *t = cbm_node_text(a, n, source);
+    if (!t) {
+        return;
+    }
+    char *angle = strchr(t, '<');
+    if (angle) {
+        *angle = '\0';
+    }
+    /* PHP qualified base may be backslash-prefixed (e.g. `\RuntimeException`);
+     * keep the bare class name so it matches the unqualified declaration. */
+    char *last_bs = strrchr(t, '\\');
+    if (last_bs) {
+        t = last_bs + 1;
+    }
+    if (t[0]) {
+        out[(*count)++] = t;
+    }
+}
+
+/* TypeScript/TSX: bases live in a `class_heritage` (class) or directly in an
+ * `extends_type_clause` (interface).  The extractor previously captured the
+ * literal "extends"/"implements" keyword text instead of the type names. */
+static int collect_ts_bases(CBMArena *a, TSNode clause, const char *source, const char **out,
+                            int out_cap, int *count) {
+    const char *kk = ts_node_type(clause);
+    if (strcmp(kk, "extends_clause") == 0) {
+        /* `extends_clause` carries the superclass in its `value` field. */
+        TSNode v = ts_node_child_by_field_name(clause, TS_FIELD("value"));
+        if (!ts_node_is_null(v)) {
+            push_base_text(a, v, source, out, out_cap, count);
+        }
+        return *count;
+    }
+    if (strcmp(kk, "implements_clause") == 0 || strcmp(kk, "extends_type_clause") == 0) {
+        /* Named children are the implemented/extended types (possibly generic). */
+        uint32_t nc = ts_node_named_child_count(clause);
+        for (uint32_t i = 0; i < nc && *count < out_cap; i++) {
+            TSNode c = ts_node_named_child(clause, i);
+            const char *ck = ts_node_type(c);
+            if (strcmp(ck, "type_arguments") == 0) {
+                continue;
+            }
+            if (strcmp(ck, "generic_type") == 0) {
+                TSNode nm = ts_node_child_by_field_name(c, TS_FIELD("name"));
+                if (!ts_node_is_null(nm)) {
+                    push_base_text(a, nm, source, out, out_cap, count);
+                    continue;
+                }
+            }
+            push_base_text(a, c, source, out, out_cap, count);
+        }
+    }
+    return *count;
+}
+
+/* TypeScript: walk the class_heritage container (which holds extends_clause +
+ * implements_clause), or handle a bare interface extends_type_clause. */
+static const char **extract_ts_bases(CBMArena *a, TSNode node, const char *source) {
+    const char *bases[MAX_BASES];
+    int count = 0;
+    uint32_t nc = ts_node_child_count(node);
+    for (uint32_t i = 0; i < nc; i++) {
+        TSNode child = ts_node_child(node, i);
+        const char *ck = ts_node_type(child);
+        if (strcmp(ck, "class_heritage") == 0) {
+            uint32_t hc = ts_node_child_count(child);
+            for (uint32_t j = 0; j < hc; j++) {
+                collect_ts_bases(a, ts_node_child(child, j), source, bases, MAX_BASES_MINUS_1,
+                                 &count);
+            }
+        } else if (strcmp(ck, "extends_type_clause") == 0) {
+            collect_ts_bases(a, child, source, bases, MAX_BASES_MINUS_1, &count);
+        }
+    }
+    if (count == 0) {
+        return NULL;
+    }
+    const char **result =
+        (const char **)cbm_arena_alloc(a, (size_t)(count + NULL_TERM) * sizeof(const char *));
+    if (!result) {
+        return NULL;
+    }
+    for (int i = 0; i < count; i++) {
+        result[i] = bases[i];
+    }
+    result[count] = NULL;
+    return result;
+}
+
+/* PHP: bases live in `base_clause` (extends) and `class_interface_clause`
+ * (implements) child nodes; named children are `name`/`qualified_name`. */
+static const char **extract_php_bases(CBMArena *a, TSNode node, const char *source) {
+    const char *bases[MAX_BASES];
+    int count = 0;
+    uint32_t nc = ts_node_child_count(node);
+    for (uint32_t i = 0; i < nc; i++) {
+        TSNode child = ts_node_child(node, i);
+        const char *ck = ts_node_type(child);
+        if (strcmp(ck, "base_clause") != 0 && strcmp(ck, "class_interface_clause") != 0) {
+            continue;
+        }
+        uint32_t cc = ts_node_named_child_count(child);
+        for (uint32_t j = 0; j < cc && count < MAX_BASES_MINUS_1; j++) {
+            push_base_text(a, ts_node_named_child(child, j), source, bases, MAX_BASES_MINUS_1,
+                           &count);
+        }
+    }
+    if (count == 0) {
+        return NULL;
+    }
+    const char **result =
+        (const char **)cbm_arena_alloc(a, (size_t)(count + NULL_TERM) * sizeof(const char *));
+    if (!result) {
+        return NULL;
+    }
+    for (int i = 0; i < count; i++) {
+        result[i] = bases[i];
+    }
+    result[count] = NULL;
+    return result;
+}
+
+/* Kotlin: supertypes live in `delegation_specifier` children.  Each holds
+ * either a bare `user_type` (interface) or a `constructor_invocation` whose
+ * `user_type` is the superclass.  Descend to the `type_identifier`. */
+static const char **extract_kotlin_bases(CBMArena *a, TSNode node, const char *source) {
+    const char *bases[MAX_BASES];
+    int count = 0;
+    uint32_t nc = ts_node_child_count(node);
+    for (uint32_t i = 0; i < nc && count < MAX_BASES_MINUS_1; i++) {
+        TSNode child = ts_node_child(node, i);
+        if (strcmp(ts_node_type(child), "delegation_specifier") != 0) {
+            continue;
+        }
+        /* Find the user_type (directly or under a constructor_invocation). */
+        TSNode ut = ts_node_named_child(child, 0);
+        if (!ts_node_is_null(ut) && strcmp(ts_node_type(ut), "constructor_invocation") == 0) {
+            ut = ts_node_named_child(ut, 0);
+        }
+        if (ts_node_is_null(ut)) {
+            continue;
+        }
+        /* user_type → type_identifier (first child); strip generic args. */
+        TSNode ti = ut;
+        if (strcmp(ts_node_type(ut), "user_type") == 0 && ts_node_named_child_count(ut) > 0) {
+            ti = ts_node_named_child(ut, 0);
+        }
+        push_base_text(a, ti, source, bases, MAX_BASES_MINUS_1, &count);
+    }
+    if (count == 0) {
+        return NULL;
+    }
+    const char **result =
+        (const char **)cbm_arena_alloc(a, (size_t)(count + NULL_TERM) * sizeof(const char *));
+    if (!result) {
+        return NULL;
+    }
+    for (int i = 0; i < count; i++) {
+        result[i] = bases[i];
+    }
+    result[count] = NULL;
+    return result;
+}
+
 // Walk a field node and collect type identifier names into out[].
 // Handles: direct type_identifier/generic_type/qualified_name, type_list children
 // (Java interfaces list), and raw text fallback (other languages).
@@ -1462,6 +1642,20 @@ static int collect_bases_from_field(CBMArena *a, TSNode field_node, const char *
                     out[count++] = t;
                 }
             }
+        } else if (strcmp(ck, "subscript") == 0) {
+            /* Python parameterized base, e.g. `class S(Generic[T])`: the base
+             * type is the `value` field of the subscript; the bracketed type
+             * args must not leak into the stored name. */
+            TSNode val = ts_node_child_by_field_name(child, TS_FIELD("value"));
+            if (ts_node_is_null(val) && ts_node_named_child_count(child) > 0) {
+                val = ts_node_named_child(child, 0);
+            }
+            if (!ts_node_is_null(val)) {
+                char *t = cbm_node_text(a, val, source);
+                if (t && t[0]) {
+                    out[count++] = t;
+                }
+            }
         } else if (strcmp(ck, "type_list") == 0 || strcmp(ck, "interface_type_list") == 0) {
             // Java: super_interfaces contains type_list with multiple type_identifiers.
             uint32_t tlnc = ts_node_named_child_count(child);
@@ -1499,7 +1693,53 @@ static int collect_bases_from_field(CBMArena *a, TSNode field_node, const char *
 // Extract base class names from a class node.
 static const char **extract_base_classes(CBMArena *a, TSNode node, const char *source,
                                          CBMLanguage lang) {
-    (void)lang;
+    // Languages whose heritage is not exposed via a tree-sitter field need
+    // dedicated walkers; the generic field/keyword path mis-captures them.
+    if (lang == CBM_LANG_TYPESCRIPT || lang == CBM_LANG_TSX) {
+        const char **ts_result = extract_ts_bases(a, node, source);
+        if (ts_result) {
+            return ts_result;
+        }
+    }
+    if (lang == CBM_LANG_PHP) {
+        const char **php_result = extract_php_bases(a, node, source);
+        if (php_result) {
+            return php_result;
+        }
+    }
+    if (lang == CBM_LANG_KOTLIN) {
+        const char **kt_result = extract_kotlin_bases(a, node, source);
+        if (kt_result) {
+            return kt_result;
+        }
+    }
+    // Squirrel: `class Dog extends Animal` — heritage is an `identifier` child
+    // directly following the `extends` keyword (no field). Grab it.
+    if (lang == CBM_LANG_SQUIRREL) {
+        uint32_t sc = ts_node_child_count(node);
+        bool seen_extends = false;
+        for (uint32_t i = 0; i < sc; i++) {
+            TSNode child = ts_node_child(node, i);
+            const char *ck = ts_node_type(child);
+            if (strcmp(ck, "extends") == 0) {
+                seen_extends = true;
+                continue;
+            }
+            if (seen_extends && strcmp(ck, "identifier") == 0) {
+                char *base = cbm_node_text(a, child, source);
+                if (base && base[0]) {
+                    const char **result =
+                        (const char **)cbm_arena_alloc(a, 2 * sizeof(const char *));
+                    if (result) {
+                        result[0] = base;
+                        result[1] = NULL;
+                        return result;
+                    }
+                }
+                break;
+            }
+        }
+    }
     static const char *fields[] = {"superclass",
                                    "superclasses",
                                    "superinterfaces",
@@ -1518,6 +1758,22 @@ static const char **extract_base_classes(CBMArena *a, TSNode node, const char *s
         if (!ts_node_is_null(super)) {
             base_count += collect_bases_from_field(a, super, source, bases + base_count,
                                                    MAX_BASES_MINUS_1 - base_count);
+        }
+    }
+
+    // Some grammars expose heritage as a named child rather than a field, e.g.
+    // Java `interface X extends A, B` → `extends_interfaces` (holds a type_list).
+    // Without this the interface's bases were never captured.
+    static const char *heritage_children[] = {"extends_interfaces", "super_interfaces", NULL};
+    uint32_t top_count = ts_node_child_count(node);
+    for (uint32_t i = 0; i < top_count && base_count < MAX_BASES_MINUS_1; i++) {
+        TSNode child = ts_node_child(node, i);
+        const char *ck = ts_node_type(child);
+        for (const char **h = heritage_children; *h; h++) {
+            if (strcmp(ck, *h) == 0) {
+                base_count += collect_bases_from_field(a, child, source, bases + base_count,
+                                                       MAX_BASES_MINUS_1 - base_count);
+            }
         }
     }
 
@@ -1982,6 +2238,44 @@ static void set_def_complexity(CBMDefinition *def, TSNode body, const CBMLangSpe
     def->max_access_depth = cx.max_access_depth;
 }
 
+/* Extract the bare type name from a Go method receiver node.
+ * The receiver is a parameter_list, e.g. "(s *OrderService)" or "(s Order)".
+ * Walks to the parameter_declaration's `type` field, unwrapping pointer_type
+ * and generic_type, and returns the type_identifier text (e.g. "OrderService").
+ * Returns NULL if no type_identifier is found. */
+static char *go_receiver_type_name(CBMArena *a, TSNode recv, const char *source) {
+    uint32_t nc = ts_node_child_count(recv);
+    for (uint32_t i = 0; i < nc; i++) {
+        TSNode child = ts_node_child(recv, i);
+        if (strcmp(ts_node_type(child), "parameter_declaration") != 0) {
+            continue;
+        }
+        TSNode tn = ts_node_child_by_field_name(child, TS_FIELD("type"));
+        if (ts_node_is_null(tn)) {
+            continue;
+        }
+        /* Unwrap pointer_type / generic_type down to the type_identifier. */
+        for (int guard = 0; guard < 4 && !ts_node_is_null(tn); guard++) {
+            const char *tk = ts_node_type(tn);
+            if (strcmp(tk, "type_identifier") == 0) {
+                return cbm_node_text(a, tn, source);
+            }
+            if (strcmp(tk, "pointer_type") == 0 || strcmp(tk, "generic_type") == 0) {
+                /* pointer_type: child is the pointee type; generic_type has a
+                 * `type` field for the base type_identifier. */
+                TSNode inner = ts_node_child_by_field_name(tn, TS_FIELD("type"));
+                if (ts_node_is_null(inner)) {
+                    inner = ts_node_named_child(tn, 0);
+                }
+                tn = inner;
+                continue;
+            }
+            break;
+        }
+    }
+    return NULL;
+}
+
 static void extract_func_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec) {
     CBMArena *a = ctx->arena;
 
@@ -2044,6 +2338,14 @@ static void extract_func_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec 
     if (!ts_node_is_null(recv)) {
         def.receiver = cbm_node_text(a, recv, ctx->source);
         def.label = "Method";
+        /* Derive parent_class from the receiver type so DEFINES_METHOD edges
+         * (and downstream Go IMPLEMENTS/OVERRIDE) link the method to its owning
+         * struct/type node.  The parent QN must match the type's node QN, which
+         * is computed the same way (cbm_fqn_compute on the type name). */
+        char *recv_type = go_receiver_type_name(a, recv, ctx->source);
+        if (recv_type && recv_type[0]) {
+            def.parent_class = cbm_fqn_compute(a, ctx->project, ctx->rel_path, recv_type);
+        }
     }
 
     // Decorators + route extraction from decorator AST
@@ -2373,6 +2675,90 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
                 find_first_descendant_by_kind(node, "simple_identifier", CBM_DESCENDANT_MAX_DEPTH);
         }
     }
+    // Grammar-only languages whose class/struct/type node carries the name on a
+    // plain identifier child (no `name` field) or nested one level under a
+    // type-binding wrapper. Class 16 fix: extract_class_def is reached (dispatch
+    // works) but name resolution fell through, so 0 nodes were emitted.
+    if (ts_node_is_null(name_node)) {
+        switch (ctx->language) {
+        case CBM_LANG_SQUIRREL: // class_declaration > identifier
+        case CBM_LANG_DLANG:    // class/struct/interface_declaration > identifier
+        case CBM_LANG_HARE:     // type_declaration > identifier
+        case CBM_LANG_ODIN:     // struct_declaration > identifier
+        case CBM_LANG_BICEP:    // resource/module_declaration > identifier
+            name_node = cbm_find_child_by_kind(node, "identifier");
+            break;
+        case CBM_LANG_POWERSHELL: // class_statement > simple_name
+            name_node = cbm_find_child_by_kind(node, "simple_name");
+            break;
+        case CBM_LANG_SWAY: // impl_item: name is the implemented type (field `type`)
+            if (strcmp(kind, "impl_item") == 0) {
+                name_node = ts_node_child_by_field_name(node, TS_FIELD("type"));
+            }
+            break;
+        case CBM_LANG_GLEAM: // type_definition > type_name > type_identifier
+            name_node = find_first_descendant_by_kind(node, "type_identifier",
+                                                      CBM_DESCENDANT_MAX_DEPTH);
+            break;
+        case CBM_LANG_RESCRIPT: { // type_declaration > type_binding(name=type_identifier)
+            TSNode binding = cbm_find_child_by_kind(node, "type_binding");
+            if (!ts_node_is_null(binding)) {
+                name_node = ts_node_child_by_field_name(binding, TS_FIELD("name"));
+                if (ts_node_is_null(name_node)) {
+                    name_node = cbm_find_child_by_kind(binding, "type_identifier");
+                }
+            }
+            break;
+        }
+        case CBM_LANG_FSHARP: { // type_definition > *_type_defn > type_name > identifier
+            TSNode tn = find_first_descendant_by_kind(node, "type_name",
+                                                      CBM_DESCENDANT_MAX_DEPTH);
+            if (!ts_node_is_null(tn)) {
+                name_node = ts_node_child_by_field_name(tn, TS_FIELD("type_name"));
+                if (ts_node_is_null(name_node)) {
+                    name_node = cbm_find_child_by_kind(tn, "identifier");
+                }
+            }
+            break;
+        }
+        case CBM_LANG_JULIA: { // struct/abstract_definition > type_head > identifier
+            TSNode head = cbm_find_child_by_kind(node, "type_head");
+            if (!ts_node_is_null(head)) {
+                name_node =
+                    find_first_descendant_by_kind(head, "identifier", CBM_DESCENDANT_MAX_DEPTH);
+            }
+            break;
+        }
+        case CBM_LANG_TCL: { // namespace > word_list > simple_word ("eval" then name)
+            TSNode wl = cbm_find_child_by_kind(node, "word_list");
+            if (!ts_node_is_null(wl)) {
+                int seen = 0;
+                uint32_t wc = ts_node_child_count(wl);
+                for (uint32_t i = 0; i < wc; i++) {
+                    TSNode w = ts_node_child(wl, i);
+                    if (strcmp(ts_node_type(w), "simple_word") == 0) {
+                        if (seen == 1) { // skip "eval", take the namespace name
+                            name_node = w;
+                            break;
+                        }
+                        seen++;
+                    }
+                }
+            }
+            break;
+        }
+        case CBM_LANG_PASCAL: { // declClass is nested; name lives on the parent declType
+            TSNode parent = ts_node_parent(node);
+            if (!ts_node_is_null(parent) &&
+                strcmp(ts_node_type(parent), "declType") == 0) {
+                name_node = ts_node_child_by_field_name(parent, TS_FIELD("name"));
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
     if (ts_node_is_null(name_node)) {
         return;
     }
@@ -2390,6 +2776,18 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
         class_qn = cbm_fqn_compute(a, ctx->project, ctx->rel_path, name);
     }
     const char *label = class_label_for_kind(kind);
+
+    // Sway/WGSL: label struct defs as "Struct" and Sway `abi` blocks as
+    // "Interface". Scoped to these grammar-only languages so established
+    // struct-as-"Class" labeling (Rust/C++/Go/Cap'n Proto …) and the
+    // downstream type/IMPLEMENTS resolvers that depend on it are unaffected.
+    if (ctx->language == CBM_LANG_SWAY || ctx->language == CBM_LANG_WGSL) {
+        if (strcmp(kind, "struct_item") == 0 || strcmp(kind, "struct_declaration") == 0) {
+            label = "Struct";
+        } else if (strcmp(kind, "abi_item") == 0) {
+            label = "Interface";
+        }
+    }
 
     // Go type_spec: check inner type for interface/struct
     if (strcmp(kind, "type_spec") == 0) {
@@ -2504,6 +2902,11 @@ static TSNode find_class_body(TSNode class_node, CBMLanguage lang) {
     if (lang == CBM_LANG_OBJC) {
         return class_node; // iterate children of the class node itself
     }
+    // Squirrel: class_declaration has no body field — member_declaration nodes
+    // (each wrapping a function_declaration) are direct children of the class.
+    if (lang == CBM_LANG_SQUIRREL) {
+        return class_node;
+    }
     // Fallback: search children for known body node types
     static const char *body_types[] = {"class_body",
                                        "interface_body",
@@ -2606,6 +3009,11 @@ static TSNode resolve_method_name(TSNode child, CBMLanguage lang) {
     if ((lang == CBM_LANG_SWIFT || lang == CBM_LANG_KOTLIN) &&
         strcmp(ck, "function_declaration") == 0) {
         return cbm_find_child_by_kind(child, "simple_identifier");
+    }
+
+    // Squirrel: function_declaration's name is a plain `identifier` child.
+    if (lang == CBM_LANG_SQUIRREL && strcmp(ck, "function_declaration") == 0) {
+        return cbm_find_child_by_kind(child, "identifier");
     }
 
     if (strcmp(ck, "arrow_function") == 0) {
@@ -2715,6 +3123,16 @@ static void extract_class_methods(CBMExtractCtx *ctx, TSNode class_node, const c
             strcmp(ts_node_type(child), "implementation_definition") == 0) {
             extract_objc_impl_methods(ctx, child, class_qn, spec);
             continue;
+        }
+
+        // Squirrel wraps each class member in a member_declaration node; the
+        // method is the inner function_declaration. Peek through the wrapper.
+        if (ctx->language == CBM_LANG_SQUIRREL &&
+            strcmp(ts_node_type(child), "member_declaration") == 0) {
+            TSNode inner = cbm_find_child_by_kind(child, "function_declaration");
+            if (!ts_node_is_null(inner)) {
+                child = inner;
+            }
         }
 
         // Python wraps @classmethod / @staticmethod / @property methods in

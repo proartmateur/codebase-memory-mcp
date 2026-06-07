@@ -317,7 +317,7 @@ static const char *java_class_types[] = {"class_declaration",   "interface_decla
                                          "package_declaration", NULL};
 static const char *java_field_types[] = {"field_declaration", NULL};
 static const char *java_module_types[] = {"program", NULL};
-static const char *java_call_types[] = {"method_invocation", NULL};
+static const char *java_call_types[] = {"method_invocation", "object_creation_expression", NULL};
 static const char *java_import_types[] = {"import_declaration", "extends", "import", NULL};
 static const char *java_branch_types[] = {
     "if_statement",    "for_statement",     "enhanced_for_statement",
@@ -363,7 +363,8 @@ static const char *cs_class_types[] = {"class_declaration",
                                        "type_declaration",
                                        NULL};
 static const char *cs_module_types[] = {"compilation_unit", NULL};
-static const char *cs_call_types[] = {"invocation_expression", NULL};
+static const char *cs_call_types[] = {"invocation_expression", "object_creation_expression",
+                                      NULL};
 static const char *cs_import_types[] = {"using_directive", "namespace_use_declaration",
                                         "using_statement", "namespace_declaration", NULL};
 static const char *cs_branch_types[] = {"if_statement",    "for_statement",    "foreach_statement",
@@ -386,6 +387,7 @@ static const char *php_import_types[] = {"extends", "include",         "namespac
 static const char *php_module_types[] = {"program", NULL};
 static const char *php_call_types[] = {"member_call_expression", "scoped_call_expression",
                                        "function_call_expression",
+                                       "object_creation_expression",
                                        "nullsafe_member_call_expression", NULL};
 static const char *php_branch_types[] = {"if_statement",    "for_statement",    "foreach_statement",
                                          "while_statement", "switch_statement", "case_statement",
@@ -413,7 +415,7 @@ static const char *scala_class_types[] = {"class_definition", "object_definition
                                           "type_definition",  NULL};
 static const char *scala_module_types[] = {"compilation_unit", NULL};
 static const char *scala_call_types[] = {"call_expression", "generic_function", "field_expression",
-                                         "infix_expression", NULL};
+                                         "infix_expression", "instance_expression", NULL};
 static const char *scala_import_types[] = {"import_declaration", "extends", "import",
                                            "using_directive", NULL};
 static const char *scala_branch_types[] = {

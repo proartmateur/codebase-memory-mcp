@@ -147,6 +147,79 @@ static char *resolve_chained_selector(CBMArena *a, TSNode sel, const char *sourc
     return method;
 }
 
+// Strip a trailing generic argument list ("<...>" / "[...]") from a type name,
+// returning the bare type identifier. Mutates an arena-owned copy in place.
+static char *strip_generic_args(char *t) {
+    if (!t) {
+        return NULL;
+    }
+    char *angle = strchr(t, '<');
+    if (angle) {
+        *angle = '\0';
+    }
+    char *brack = strchr(t, '[');
+    if (brack) {
+        *brack = '\0';
+    }
+    return t;
+}
+
+// Pull the constructed type name out of a constructor/instantiation node:
+//   new_expression               (TS/JS)  -> `constructor`/`type` field or first type child
+//   object_creation_expression   (Java/C#/PHP) -> `type` field or first type child
+//   instance_expression          (Scala)  -> nested type in the wrapped type/call
+// Returns the bare type name (generic args stripped) or NULL if not a
+// constructor node / no type found. Constructor calls resolve to the class's
+// constructor (or the class node) downstream, producing a CALLS edge.
+static char *extract_constructor_callee(CBMArena *a, TSNode node, const char *source,
+                                        const char *nk) {
+    if (strcmp(nk, "new_expression") != 0 && strcmp(nk, "object_creation_expression") != 0 &&
+        strcmp(nk, "instance_expression") != 0) {
+        return NULL;
+    }
+
+    // Preferred: explicit fields used by the various grammars.
+    static const char *type_fields[] = {"constructor", "type", "name", NULL};
+    for (const char **f = type_fields; *f; f++) {
+        TSNode tn = ts_node_child_by_field_name(node, *f, (uint32_t)strlen(*f));
+        if (!ts_node_is_null(tn)) {
+            const char *tk = ts_node_type(tn);
+            // For a generic_type wrapper, descend to the bare name child.
+            if (strcmp(tk, "generic_type") == 0 && ts_node_named_child_count(tn) > 0) {
+                tn = ts_node_named_child(tn, 0);
+            }
+            char *t = strip_generic_args(cbm_node_text(a, tn, source));
+            if (t && t[0]) {
+                return t;
+            }
+        }
+    }
+
+    // Fallback: first type-like named child (covers grammars that don't expose
+    // a field, e.g. Scala's instance_expression wraps the type directly).
+    uint32_t nc = ts_node_named_child_count(node);
+    for (uint32_t i = 0; i < nc; i++) {
+        TSNode child = ts_node_named_child(node, i);
+        const char *ck = ts_node_type(child);
+        if (strcmp(ck, "type_identifier") == 0 || strcmp(ck, "identifier") == 0 ||
+            strcmp(ck, "qualified_name") == 0 || strcmp(ck, "scoped_type_identifier") == 0 ||
+            strcmp(ck, "qualified_identifier") == 0 || strcmp(ck, "name") == 0 ||
+            strcmp(ck, "type") == 0 || strcmp(ck, "generic_type") == 0 ||
+            strcmp(ck, "simple_type") == 0 || strcmp(ck, "stable_type_identifier") == 0 ||
+            strcmp(ck, "user_type") == 0) {
+            // Descend through a generic_type wrapper to the bare name.
+            if (strcmp(ck, "generic_type") == 0 && ts_node_named_child_count(child) > 0) {
+                child = ts_node_named_child(child, 0);
+            }
+            char *t = strip_generic_args(cbm_node_text(a, child, source));
+            if (t && t[0]) {
+                return t;
+            }
+        }
+    }
+    return NULL;
+}
+
 // Try common field-based callee resolution (function, name, method fields).
 static char *extract_callee_from_fields(CBMArena *a, TSNode node, const char *source) {
     // Try "function" field
@@ -536,6 +609,32 @@ static char *extract_callee_name(CBMArena *a, TSNode node, const char *source, C
         char *g = gotemplate_callee(a, node, source);
         if (g) {
             return g;
+        }
+    }
+
+    // Constructor / instantiation nodes (new T(), object_creation, instance_expression):
+    // resolve to the constructed type so a CALLS edge links to the class/constructor.
+    char *ctor = extract_constructor_callee(a, node, source, ts_node_type(node));
+    if (ctor) {
+        return ctor;
+    }
+
+    // Ruby: `Widget.new(...)` is a method call on a constant receiver whose
+    // method is `new`.  The constructor body lives in `initialize`, so a callee
+    // of "new" never resolves.  Redirect to the receiver type name so the call
+    // links to the class/constructor like every other language's `new T()`.
+    if (lang == CBM_LANG_RUBY) {
+        TSNode m = ts_node_child_by_field_name(node, TS_FIELD("method"));
+        TSNode recv = ts_node_child_by_field_name(node, TS_FIELD("receiver"));
+        if (!ts_node_is_null(m) && !ts_node_is_null(recv) &&
+            strcmp(ts_node_type(recv), "constant") == 0) {
+            char *mt = cbm_node_text(a, m, source);
+            if (mt && strcmp(mt, "new") == 0) {
+                char *rt = cbm_node_text(a, recv, source);
+                if (rt && rt[0]) {
+                    return rt;
+                }
+            }
         }
     }
 
