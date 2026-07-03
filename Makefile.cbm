@@ -113,7 +113,8 @@ FOUNDATION_SRCS = \
     src/foundation/diagnostics.c \
     src/foundation/profile.c \
     src/foundation/dump_verify.c \
-    src/foundation/limits.c
+    src/foundation/limits.c \
+    src/foundation/subprocess.c
 
 # Existing extraction C code (compiled from current location)
 EXTRACTION_SRCS = \
@@ -310,7 +311,8 @@ TEST_FOUNDATION_SRCS = \
     tests/test_log.c \
     tests/test_str_util.c \
     tests/test_platform.c \
-    tests/test_dump_verify.c
+    tests/test_dump_verify.c \
+    tests/test_subprocess.c
 
 TEST_EXTRACTION_SRCS = \
     tests/test_extraction.c \
