@@ -516,8 +516,12 @@ static const CBMType *perl_eval_function_call_type(PerlLSPContext *ctx, TSNode n
 
     const CBMRegisteredFunc *f = NULL;
 
-    /* Package::func() — qualified static call. */
-    char *colons = strstr(name, "::");
+    /* Package::func() — qualified static call. Split on the LAST "::" so
+     * multi-level packages keep their full name (Foo::Bar::sub -> pkg
+     * "Foo::Bar", sub "sub"), mirroring perl_resolve_function_call. */
+    char *colons = NULL;
+    for (char *p = strstr(name, "::"); p; p = strstr(p + 2, "::"))
+        colons = p;
     if (colons) {
         size_t plen = (size_t)(colons - name);
         char *pkg = cbm_arena_strndup(ctx->arena, name, plen);
@@ -807,6 +811,25 @@ static char *perl_sub_name(PerlLSPContext *ctx, TSNode node) {
     return perl_node_text(ctx, name);
 }
 
+/* The invocant idiom is `my $self = shift;` / `shift @_` / `$_[0]`. Match
+ * `shift` only at word boundaries so `shifty()` / `myshift` do not falsely bind
+ * the receiver, and also accept the `$_[0]` positional form. */
+static bool perl_rhs_is_invocant(const char *rtxt) {
+    if (!rtxt)
+        return false;
+    if (strstr(rtxt, "$_[0]"))
+        return true;
+    for (const char *p = strstr(rtxt, "shift"); p; p = strstr(p + 5, "shift")) {
+        char before = (p == rtxt) ? '\0' : p[-1];
+        char after = p[5];
+        bool lb = !(isalnum((unsigned char)before) || before == '_');
+        bool rb = !(isalnum((unsigned char)after) || after == '_');
+        if (lb && rb)
+            return true;
+    }
+    return false;
+}
+
 /* Bind the invocant: in a method sub belonging to package P, the first
  * statement is typically `my $self = shift;` or `my $class = shift;`. Bind the
  * first such scalar to type P so $self->method() / $class->method() dispatch. */
@@ -850,9 +873,9 @@ static void perl_infer_self_type(PerlLSPContext *ctx, TSNode body) {
         if (strcmp(lvk, "scalar") != 0 && strcmp(lvk, "scalar_variable") != 0)
             continue;
 
-        /* RHS must reference `shift` (the invocant idiom). */
+        /* RHS must reference the invocant idiom (`shift` / `shift @_` / `$_[0]`). */
         char *rtxt = perl_node_text(ctx, right);
-        if (!rtxt || !strstr(rtxt, "shift"))
+        if (!perl_rhs_is_invocant(rtxt))
             continue;
 
         char *vtxt = perl_node_text(ctx, lhs_var);
@@ -1363,6 +1386,16 @@ void cbm_run_perl_lsp(CBMArena *arena, CBMFileResult *result, const char *source
     perl_register_packages(&ctx, &reg);
     perl_attach_methods(&ctx, &reg, root);
 
+    /* Finalize the registry for O(1) lookups during resolution — mirrors
+     * php_lsp/java_lsp. Must come AFTER all registry mutations (stdlib, file
+     * defs, packages, methods) and BEFORE resolution. reg's arena is the
+     * pipeline-lifetime result arena, so per-file bucket allocations go to a
+     * per-call scratch arena that dies with this call rather than accumulating
+     * across a large repo. */
+    CBMArena idx_arena;
+    cbm_arena_init(&idx_arena);
+    cbm_registry_finalize_into(&reg, &idx_arena);
+
     /* Phase C: two-pass resolution walk (PASS 1 re-populates the per-file use
      * map + ISA context needed for the bless/$self idioms during PASS 2). */
     perl_lsp_process_file(&ctx, root);
@@ -1377,4 +1410,6 @@ void cbm_run_perl_lsp(CBMArena *arena, CBMFileResult *result, const char *source
                     r->strategy, r->confidence);
         }
     }
+
+    cbm_arena_destroy(&idx_arena);
 }
