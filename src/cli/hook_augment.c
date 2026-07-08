@@ -231,7 +231,8 @@ static char *ha_format_context(const char *envelope, const char *token, bool *is
  * knows the knowledge graph may under-report this file. Best-effort and
  * non-blocking like everything else here — no entry, no output. */
 
-/* Parse a get_index_coverage envelope and return a note when `rel` is listed.
+/* Parse an index_status envelope (which carries the coverage report) and
+ * return a note when `rel` is listed.
  * *is_error is set for MCP errors (project not indexed) → caller climbs. */
 static char *ha_coverage_context(const char *envelope, const char *rel, bool *is_error) {
     *is_error = false;
@@ -349,7 +350,7 @@ static char *ha_resolve_coverage(cbm_mcp_server_t *srv, const char *file_path) {
             yyjson_mut_doc_free(adoc);
             free(project);
             if (args) {
-                char *res = cbm_mcp_handle_tool(srv, "get_index_coverage", args);
+                char *res = cbm_mcp_handle_tool(srv, "index_status", args);
                 free(args);
                 if (res) {
                     bool is_error = false;

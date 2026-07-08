@@ -364,7 +364,7 @@ TEST(index_parse_partial_reported) {
     free(logtext);
 
     /* The signal is persisted in the SEPARATE index_coverage table (never
-     * mixed into the graph tables) and queryable via get_index_coverage,
+     * mixed into the graph tables) and reported by index_status,
      * exactly as the index_repository tool description advertises. */
     cbm_coverage_row_t *rows = NULL;
     int cov_count = 0;
@@ -384,11 +384,27 @@ TEST(index_parse_partial_reported) {
 
     char qargs[900];
     snprintf(qargs, sizeof(qargs), "{\"project\":\"%s\"}", lp.project);
-    char *qresp = cbm_mcp_handle_tool(lp.srv, "get_index_coverage", qargs);
+    char *qresp = cbm_mcp_handle_tool(lp.srv, "index_status", qargs);
     ASSERT_NOT_NULL(qresp);
     ASSERT_NOT_NULL(strstr(qresp, "split.c"));
     ASSERT_NOT_NULL(strstr(qresp, "parse_partial"));
     free(qresp);
+
+    /* get_code_snippet on a symbol from the flagged file carries the
+     * correlated coverage note (the result names its file, so the warning is
+     * precisely anchored); the note never fires for clean files. */
+    snprintf(qargs, sizeof(qargs), "{\"project\":\"%s\",\"qualified_name\":\"ok_before\"}",
+             lp.project);
+    char *sresp = cbm_mcp_handle_tool(lp.srv, "get_code_snippet", qargs);
+    ASSERT_NOT_NULL(sresp);
+    ASSERT_NOT_NULL(strstr(sresp, "coverage_note"));
+    ASSERT_NOT_NULL(strstr(sresp, "PARTIALLY indexed"));
+    free(sresp);
+    snprintf(qargs, sizeof(qargs), "{\"project\":\"%s\",\"qualified_name\":\"alpha\"}", lp.project);
+    char *cresp2 = cbm_mcp_handle_tool(lp.srv, "get_code_snippet", qargs);
+    ASSERT_NOT_NULL(cresp2);
+    ASSERT_NULL(strstr(cresp2, "coverage_note")); /* good.py: no note */
+    free(cresp2);
 
     /* The missed GRAPH: the same signal is queryable as a file-structure
      * graph via query_graph(graph="missed") — exactly the query the tool
@@ -424,7 +440,7 @@ TEST(index_parse_partial_reported) {
 /* INV(parse-partial-clears-on-fix, #963): the persisted coverage signal must
  * stay FRESH — after the broken file is fixed and the project re-indexed
  * (incremental route: the DB already exists), its parse_partial row is gone
- * and get_index_coverage reports it no longer. A stale flag on a fixed file
+ * and index_status reports it no longer. A stale flag on a fixed file
  * would make the whole signal untrustworthy. */
 TEST(index_parse_partial_clears_on_fix) {
     RProj lp;
@@ -464,7 +480,7 @@ TEST(index_parse_partial_clears_on_fix) {
     /* Flagged after the first (full) index. */
     char qargs[900];
     snprintf(qargs, sizeof(qargs), "{\"project\":\"%s\"}", lp.project);
-    char *cov1 = cbm_mcp_handle_tool(lp.srv, "get_index_coverage", qargs);
+    char *cov1 = cbm_mcp_handle_tool(lp.srv, "index_status", qargs);
     ASSERT_NOT_NULL(cov1);
     ASSERT_NOT_NULL(strstr(cov1, "flaky.c"));
     free(cov1);
@@ -485,7 +501,7 @@ TEST(index_parse_partial_clears_on_fix) {
     ASSERT_NOT_NULL(resp2);
     free(resp2);
 
-    char *cov2 = cbm_mcp_handle_tool(lp.srv, "get_index_coverage", qargs);
+    char *cov2 = cbm_mcp_handle_tool(lp.srv, "index_status", qargs);
     ASSERT_NOT_NULL(cov2);
     ASSERT_NULL(strstr(cov2, "flaky.c"));
     free(cov2);
