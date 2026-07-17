@@ -1,4 +1,4 @@
-/* compact_out.c — TOON emission helpers. See compact_out.h for the contract. */
+/* compact_out.c — tree-format emission helpers. See compact_out.h for the contract. */
 #include "mcp/compact_out.h"
 
 #include <ctype.h>
@@ -72,7 +72,7 @@ void cbm_sb_free(cbm_sb_t *sb) {
     cbm_sb_init(sb);
 }
 
-/* ── TOON quoting ───────────────────────────────────────────────── */
+/* ── Tree quoting ────────────────────────────────────────────────── */
 
 /* True when `s` parses as an integer or real literal (sign, digits, one dot). */
 static bool looks_numeric(const char *s) {
@@ -153,14 +153,14 @@ static void append_value(cbm_sb_t *sb, const char *s) {
 
 /* ── Scalars ────────────────────────────────────────────────────── */
 
-void cbm_toon_scalar_str(cbm_sb_t *sb, const char *key, const char *val) {
+void cbm_tree_scalar_str(cbm_sb_t *sb, const char *key, const char *val) {
     cbm_sb_append(sb, key);
     cbm_sb_append_n(sb, ": ", 2);
     append_value(sb, val);
     cbm_sb_append_n(sb, "\n", 1);
 }
 
-void cbm_toon_scalar_int(cbm_sb_t *sb, const char *key, long long v) {
+void cbm_tree_scalar_int(cbm_sb_t *sb, const char *key, long long v) {
     char num[32];
     snprintf(num, sizeof(num), "%lld", v);
     cbm_sb_append(sb, key);
@@ -169,7 +169,7 @@ void cbm_toon_scalar_int(cbm_sb_t *sb, const char *key, long long v) {
     cbm_sb_append_n(sb, "\n", 1);
 }
 
-void cbm_toon_scalar_bool(cbm_sb_t *sb, const char *key, bool v) {
+void cbm_tree_scalar_bool(cbm_sb_t *sb, const char *key, bool v) {
     cbm_sb_append(sb, key);
     cbm_sb_append_n(sb, ": ", 2);
     cbm_sb_append(sb, v ? "true" : "false");
@@ -180,7 +180,7 @@ void cbm_toon_scalar_bool(cbm_sb_t *sb, const char *key, bool v) {
 
 /* Tree-syntax table header: `key: N  (cols: a b c)` — count first (agents
  * read scale before rows), column names once, rows indented beneath. */
-void cbm_toon_table_header(cbm_sb_t *sb, const char *key, int n, const char *const *cols,
+void cbm_tree_table_header(cbm_sb_t *sb, const char *key, int n, const char *const *cols,
                            int ncols) {
     char num[32];
     snprintf(num, sizeof(num), ": %d  (cols:", n);
@@ -193,18 +193,18 @@ void cbm_toon_table_header(cbm_sb_t *sb, const char *key, int n, const char *con
     cbm_sb_append_n(sb, ")\n", 2);
 }
 
-void cbm_toon_row_begin(cbm_sb_t *sb) {
+void cbm_tree_row_begin(cbm_sb_t *sb) {
     cbm_sb_append_n(sb, "  ", 2);
 }
 
-void cbm_toon_cell_str(cbm_sb_t *sb, const char *val, bool first) {
+void cbm_tree_cell_str(cbm_sb_t *sb, const char *val, bool first) {
     if (!first) {
         cbm_sb_append_n(sb, " ", 1);
     }
     append_value(sb, val ? val : "");
 }
 
-void cbm_toon_cell_int(cbm_sb_t *sb, long long v, bool first) {
+void cbm_tree_cell_int(cbm_sb_t *sb, long long v, bool first) {
     char num[32];
     snprintf(num, sizeof(num), "%lld", v);
     if (!first) {
@@ -213,7 +213,7 @@ void cbm_toon_cell_int(cbm_sb_t *sb, long long v, bool first) {
     cbm_sb_append(sb, num);
 }
 
-void cbm_toon_cell_real(cbm_sb_t *sb, double v, bool first) {
+void cbm_tree_cell_real(cbm_sb_t *sb, double v, bool first) {
     char num[48];
     snprintf(num, sizeof(num), "%.4g", v);
     if (!first) {
@@ -222,13 +222,13 @@ void cbm_toon_cell_real(cbm_sb_t *sb, double v, bool first) {
     cbm_sb_append(sb, num);
 }
 
-void cbm_toon_cell_bool(cbm_sb_t *sb, bool v, bool first) {
+void cbm_tree_cell_bool(cbm_sb_t *sb, bool v, bool first) {
     if (!first) {
         cbm_sb_append_n(sb, " ", 1);
     }
     cbm_sb_append(sb, v ? "true" : "false");
 }
 
-void cbm_toon_row_end(cbm_sb_t *sb) {
+void cbm_tree_row_end(cbm_sb_t *sb) {
     cbm_sb_append_n(sb, "\n", 1);
 }

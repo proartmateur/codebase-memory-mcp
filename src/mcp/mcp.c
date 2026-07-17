@@ -370,12 +370,13 @@ static const tool_def_t TOOLS[] = {
      "(2) name_pattern='.*regex.*' for exact pattern matching; (3) semantic_query=[...] for "
      "vector cosine search that bridges vocabulary (finds 'publish' when you search 'send'). "
      "The three modes are independent and can be combined in a single call. "
-     "RESPONSE: compact TOON tables by default — `results[N]{qn,label,file,lines,in,out}:` "
-     "header then one row per hit. in/out = TOTAL degree across ALL edge types (DEFINES, "
+     "RESPONSE: prefix-grouped tree rows by default — a shared (qn-prefix, file) group "
+     "header printed once, then `name label lines in out` per row (full qn = group prefix "
+     "+ dot + name). in/out = TOTAL degree across ALL edge types (DEFINES, "
      "USAGE, CALLS, ...), NOT caller/callee counts — use trace_path for callers. Add per-node "
      "property columns via "
-     "fields (e.g. [\"complexity\",\"signature\",\"docstring\"]); pass format=\"json\" for "
-     "legacy verbose objects (include_connected always uses JSON). "
+     "fields (e.g. [\"complexity\",\"signature\",\"docstring\"]); format=\"json\" returns "
+     "the SAME tree model as structured JSON. "
      "PAGINATION: results are capped at limit (default 50). The response always includes "
      "'total' (full match count before limit) and 'has_more' (true when total > "
      "offset+returned). Detect truncation with has_more, then page by re-calling with "
@@ -403,11 +404,11 @@ static const tool_def_t TOOLS[] = {
      "detect the limit and paginate.\"},\"offset\":{\"type\":\"integer\",\"default\":0,"
      "\"description\":\"Skip the first N matching nodes. Combine with 'limit' to page: "
      "increment offset by limit and re-call while has_more is true.\"},"
-     "\"format\":{\"type\":\"string\",\"enum\":[\"toon\",\"tree\",\"json\"],\"default\":\"toon\","
-     "\"description\":\"Response encoding. toon (default): compact header+rows tables, "
-     "~60% fewer tokens. json: legacy verbose per-node objects.\"},"
+     "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\","
+     "\"description\":\"Response encoding. tree (default): prefix-grouped text rows. "
+     "json: the SAME tree model as structured JSON (groups + column-ordered row arrays).\"},"
      "\"fields\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
-     "\"Extra per-node property columns for toon output, e.g. complexity, cognitive, "
+     "\"Extra per-node property columns, e.g. complexity, cognitive, "
      "signature, docstring, return_type, is_test, lines(int). Core row columns "
      "(qn/label/file/lines/in/out) are always present — do not request them here. "
      "Missing values emit as empty cells.\"},"
@@ -454,10 +455,11 @@ static const tool_def_t TOOLS[] = {
      "Trace paths through the code graph. Modes: calls (callers/callees), data_flow (value "
      "propagation with args at each hop), cross_service (through HTTP/async Route nodes). "
      "Use INSTEAD OF grep for callers, dependencies, impact analysis, or data flow tracing. "
-     "RESPONSE: compact TOON tables — `callees[N]{qn,hop}:`/`callers[N]{qn,hop}:` headers then "
-     "one row per reached node (hop = BFS distance); risk/test/args columns appear when the "
-     "matching flags are set. `truncated: true` means a direction hit the node budget — re-call "
-     "with a higher 'limit'. Pass format=\"json\" for legacy verbose objects.",
+     "RESPONSE: prefix-grouped tree rows — callees/callers grouped under their shared "
+     "qn-prefix, `name hop` per row (full qn = group prefix + dot + name); exact "
+     "callees_total/callers_total on every page; risk/args flags use a flat table. "
+     "`truncated: true` + `next` = more rows — pass next back as cursor. "
+     "format=\"json\" returns the SAME tree model as structured JSON.",
      "{\"type\":\"object\",\"properties\":{\"function_name\":{\"type\":\"string\"},\"project\":{"
      "\"type\":\"string\"},\"direction\":{\"type\":\"string\",\"enum\":[\"inbound\",\"outbound\","
      "\"both\"],\"default\":\"both\"},\"depth\":{\"type\":\"integer\",\"default\":3},"
@@ -480,9 +482,9 @@ static const tool_def_t TOOLS[] = {
      "\"},\"include_tests\":{\"type\":\"boolean\",\"default\":false,"
      "\"description\":\"Include test files in results. When false (default), test files are "
      "filtered out. When true, test nodes are included with a test column/marker.\"},"
-     "\"format\":{\"type\":\"string\",\"enum\":[\"toon\",\"tree\",\"json\"],\"default\":\"toon\","
-     "\"description\":\"Response encoding. toon (default): compact header+rows tables. "
-     "json: legacy verbose per-hop objects.\"}},"
+     "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\","
+     "\"description\":\"Response encoding. tree (default): prefix-grouped text rows. "
+     "json: the SAME tree model as structured JSON (groups + column-ordered row arrays).\"}},"
      "\"required\":[\"function_name\",\"project\"]}"},
 
     {"get_code_snippet", "Get code snippet",
@@ -2372,14 +2374,14 @@ static char *bm25_search(cbm_store_t *store, const char *project, const char *qu
             } else {
                 lines[0] = '\0';
             }
-            cbm_toon_row_begin(&rows);
-            cbm_toon_cell_str(&rows, (const char *)sqlite3_column_text(stmt, BM25_COL_QN), true);
-            cbm_toon_cell_str(&rows, (const char *)sqlite3_column_text(stmt, BM25_COL_LABEL),
+            cbm_tree_row_begin(&rows);
+            cbm_tree_cell_str(&rows, (const char *)sqlite3_column_text(stmt, BM25_COL_QN), true);
+            cbm_tree_cell_str(&rows, (const char *)sqlite3_column_text(stmt, BM25_COL_LABEL),
                               false);
-            cbm_toon_cell_str(&rows, (const char *)sqlite3_column_text(stmt, BM25_COL_FILE), false);
-            cbm_toon_cell_str(&rows, lines, false);
-            cbm_toon_cell_real(&rows, sqlite3_column_double(stmt, BM25_COL_RANK), false);
-            cbm_toon_row_end(&rows);
+            cbm_tree_cell_str(&rows, (const char *)sqlite3_column_text(stmt, BM25_COL_FILE), false);
+            cbm_tree_cell_str(&rows, lines, false);
+            cbm_tree_cell_real(&rows, sqlite3_column_double(stmt, BM25_COL_RANK), false);
+            cbm_tree_row_end(&rows);
             emitted++;
         }
         sqlite3_finalize(stmt);
@@ -2387,14 +2389,14 @@ static char *bm25_search(cbm_store_t *store, const char *project, const char *qu
 
         cbm_sb_t sb;
         cbm_sb_init(&sb);
-        cbm_toon_scalar_int(&sb, "total", total);
-        cbm_toon_scalar_str(&sb, "search_mode", "bm25");
+        cbm_tree_scalar_int(&sb, "total", total);
+        cbm_tree_scalar_str(&sb, "search_mode", "bm25");
         static const char *const cols[] = {"qn", "label", "file", "lines", "rank"};
-        cbm_toon_table_header(&sb, "results", emitted, cols, 5);
+        cbm_tree_table_header(&sb, "results", emitted, cols, 5);
         char *rows_text = cbm_sb_finish(&rows);
         cbm_sb_append(&sb, rows_text ? rows_text : "");
         free(rows_text);
-        cbm_toon_scalar_bool(&sb, "has_more", total > offset + emitted);
+        cbm_tree_scalar_bool(&sb, "has_more", total > offset + emitted);
         return cbm_sb_finish(&sb);
     }
 
@@ -2651,15 +2653,15 @@ static void sg_toon_extra_cells(cbm_sb_t *sb, const char *props_json, const char
     for (int f = 0; f < nfields; f++) {
         yyjson_val *v = (pr && yyjson_is_obj(pr)) ? yyjson_obj_get(pr, fields[f]) : NULL;
         if (v && yyjson_is_str(v)) {
-            cbm_toon_cell_str(sb, yyjson_get_str(v), false);
+            cbm_tree_cell_str(sb, yyjson_get_str(v), false);
         } else if (v && yyjson_is_bool(v)) {
-            cbm_toon_cell_bool(sb, yyjson_get_bool(v), false);
+            cbm_tree_cell_bool(sb, yyjson_get_bool(v), false);
         } else if (v && yyjson_is_int(v)) {
-            cbm_toon_cell_int(sb, yyjson_get_int(v), false);
+            cbm_tree_cell_int(sb, yyjson_get_int(v), false);
         } else if (v && yyjson_is_real(v)) {
-            cbm_toon_cell_real(sb, yyjson_get_real(v), false);
+            cbm_tree_cell_real(sb, yyjson_get_real(v), false);
         } else {
-            cbm_toon_cell_str(sb, "", false);
+            cbm_tree_cell_str(sb, "", false);
         }
     }
     if (pd) {
@@ -2679,18 +2681,18 @@ static void sg_lines_str(char *out, size_t sz, int start, int end) {
 /* Emit the regex-path search results as a TOON table. */
 static void emit_search_results_toon(cbm_sb_t *sb, const cbm_search_output_t *out, int offset,
                                      const char *const *fields, int nfields, bool detail_ids) {
-    cbm_toon_scalar_int(sb, "total", out->total);
+    cbm_tree_scalar_int(sb, "total", out->total);
     if (detail_ids) {
         /* ids tier: bare qn enumeration — for "list everything matching X"
          * sweeps where per-row metadata is noise (LocAgent's fold tier). */
         static const char *const id_cols[] = {"qn"};
-        cbm_toon_table_header(sb, "results", out->count, id_cols, 1);
+        cbm_tree_table_header(sb, "results", out->count, id_cols, 1);
         for (int i = 0; i < out->count; i++) {
-            cbm_toon_row_begin(sb);
-            cbm_toon_cell_str(sb, out->results[i].node.qualified_name, true);
-            cbm_toon_row_end(sb);
+            cbm_tree_row_begin(sb);
+            cbm_tree_cell_str(sb, out->results[i].node.qualified_name, true);
+            cbm_tree_row_end(sb);
         }
-        cbm_toon_scalar_bool(sb, "has_more", out->total > offset + out->count);
+        cbm_tree_scalar_bool(sb, "has_more", out->total > offset + out->count);
         return;
     }
     const char *cols[6 + SG_MAX_EXTRA_FIELDS] = {"qn", "label", "file", "lines", "in", "out"};
@@ -2698,22 +2700,22 @@ static void emit_search_results_toon(cbm_sb_t *sb, const cbm_search_output_t *ou
     for (int f = 0; f < nfields; f++) {
         cols[ncols++] = fields[f];
     }
-    cbm_toon_table_header(sb, "results", out->count, cols, ncols);
+    cbm_tree_table_header(sb, "results", out->count, cols, ncols);
     for (int i = 0; i < out->count; i++) {
         const cbm_search_result_t *sr = &out->results[i];
         char lines[CBM_SZ_32];
         sg_lines_str(lines, sizeof(lines), sr->node.start_line, sr->node.end_line);
-        cbm_toon_row_begin(sb);
-        cbm_toon_cell_str(sb, sr->node.qualified_name, true);
-        cbm_toon_cell_str(sb, sr->node.label, false);
-        cbm_toon_cell_str(sb, sr->node.file_path, false);
-        cbm_toon_cell_str(sb, lines, false);
-        cbm_toon_cell_int(sb, sr->in_degree, false);
-        cbm_toon_cell_int(sb, sr->out_degree, false);
+        cbm_tree_row_begin(sb);
+        cbm_tree_cell_str(sb, sr->node.qualified_name, true);
+        cbm_tree_cell_str(sb, sr->node.label, false);
+        cbm_tree_cell_str(sb, sr->node.file_path, false);
+        cbm_tree_cell_str(sb, lines, false);
+        cbm_tree_cell_int(sb, sr->in_degree, false);
+        cbm_tree_cell_int(sb, sr->out_degree, false);
         sg_toon_extra_cells(sb, sr->node.properties_json, fields, nfields);
-        cbm_toon_row_end(sb);
+        cbm_tree_row_end(sb);
     }
-    cbm_toon_scalar_bool(sb, "has_more", out->total > offset + out->count);
+    cbm_tree_scalar_bool(sb, "has_more", out->total > offset + out->count);
 }
 
 /* ── Tree format (Phase-2 A/B candidate) ────────────────────────────
@@ -2779,10 +2781,10 @@ static void emit_search_results_tree(cbm_sb_t *sb, cbm_search_output_t *out, int
         /* Extra property columns (fields param), space-delimited; missing
          * values emit as "-" so column positions stay stable. */
         if (nfields > 0) {
-            yyjson_doc *pd = (sr->node.properties_json && sr->node.properties_json[0])
-                                 ? yyjson_read(sr->node.properties_json,
-                                               strlen(sr->node.properties_json), 0)
-                                 : NULL;
+            yyjson_doc *pd =
+                (sr->node.properties_json && sr->node.properties_json[0])
+                    ? yyjson_read(sr->node.properties_json, strlen(sr->node.properties_json), 0)
+                    : NULL;
             yyjson_val *pr = pd ? yyjson_doc_get_root(pd) : NULL;
             for (int f = 0; f < nfields; f++) {
                 yyjson_val *v = (pr && yyjson_is_obj(pr)) ? yyjson_obj_get(pr, fields[f]) : NULL;
@@ -2811,18 +2813,99 @@ static void emit_search_results_tree(cbm_sb_t *sb, cbm_search_output_t *out, int
     cbm_sb_append(sb, buf);
 }
 
+/* json-stringified tree: the SAME grouped model as the text tree, serialized
+ * as JSON for agents that need structured parsing — groups with a shared
+ * (qn_prefix, file) and column-ordered row ARRAYS (never per-row key
+ * envelopes; that legacy shape was 84% key overhead). */
+static void emit_search_results_tree_json(yyjson_mut_doc *doc, yyjson_mut_val *root,
+                                          cbm_search_output_t *out, int offset,
+                                          const char *const *fields, int nfields) {
+    yyjson_mut_obj_add_int(doc, root, "total", out->total);
+    yyjson_mut_obj_add_int(doc, root, "count", out->count);
+    yyjson_mut_val *cols = yyjson_mut_arr(doc);
+    static const char *const col_names[] = {"name", "label", "lines", "in", "out"};
+    for (size_t i = 0; i < sizeof(col_names) / sizeof(col_names[0]); i++) {
+        yyjson_mut_arr_add_str(doc, cols, col_names[i]);
+    }
+    for (int f = 0; f < nfields; f++) {
+        yyjson_mut_arr_add_strcpy(doc, cols, fields[f]);
+    }
+    yyjson_mut_obj_add_val(doc, root, "cols", cols);
+    if (out->count > 1) {
+        qsort(out->results, (size_t)out->count, sizeof(cbm_search_result_t), sg_cmp_by_qn);
+    }
+    yyjson_mut_val *groups = yyjson_mut_arr(doc);
+    yyjson_mut_val *cur = NULL;
+    yyjson_mut_val *cur_rows = NULL;
+    char cur_key[CBM_SZ_1K] = "";
+    for (int i = 0; i < out->count; i++) {
+        const cbm_search_result_t *sr = &out->results[i];
+        const char *qn = sr->node.qualified_name ? sr->node.qualified_name : "";
+        const char *file = sr->node.file_path ? sr->node.file_path : "";
+        size_t plen = sg_qn_prefix_len(qn);
+        char key[CBM_SZ_1K];
+        snprintf(key, sizeof(key), "%.*s|%s", (int)plen, qn, file);
+        if (!cur || strcmp(key, cur_key) != 0) {
+            snprintf(cur_key, sizeof(cur_key), "%s", key);
+            cur = yyjson_mut_obj(doc);
+            char prefix[CBM_SZ_1K];
+            snprintf(prefix, sizeof(prefix), "%.*s", (int)plen, qn);
+            yyjson_mut_obj_add_strcpy(doc, cur, "qn_prefix", prefix);
+            yyjson_mut_obj_add_strcpy(doc, cur, "file", file);
+            cur_rows = yyjson_mut_arr(doc);
+            yyjson_mut_obj_add_val(doc, cur, "rows", cur_rows);
+            yyjson_mut_arr_add_val(groups, cur);
+        }
+        char lines[CBM_SZ_32];
+        sg_lines_str(lines, sizeof(lines), sr->node.start_line, sr->node.end_line);
+        yyjson_mut_val *row = yyjson_mut_arr(doc);
+        yyjson_mut_arr_add_strcpy(doc, row, plen ? qn + plen + 1 : qn);
+        yyjson_mut_arr_add_strcpy(doc, row, sr->node.label ? sr->node.label : "");
+        yyjson_mut_arr_add_strcpy(doc, row, lines);
+        yyjson_mut_arr_add_int(doc, row, sr->in_degree);
+        yyjson_mut_arr_add_int(doc, row, sr->out_degree);
+        if (nfields > 0) {
+            yyjson_doc *pd =
+                (sr->node.properties_json && sr->node.properties_json[0])
+                    ? yyjson_read(sr->node.properties_json, strlen(sr->node.properties_json), 0)
+                    : NULL;
+            yyjson_val *pr = pd ? yyjson_doc_get_root(pd) : NULL;
+            for (int f = 0; f < nfields; f++) {
+                yyjson_val *v = (pr && yyjson_is_obj(pr)) ? yyjson_obj_get(pr, fields[f]) : NULL;
+                if (v && yyjson_is_str(v)) {
+                    yyjson_mut_arr_add_strcpy(doc, row, yyjson_get_str(v));
+                } else if (v && yyjson_is_int(v)) {
+                    yyjson_mut_arr_add_int(doc, row, yyjson_get_int(v));
+                } else if (v && yyjson_is_real(v)) {
+                    yyjson_mut_arr_add_real(doc, row, yyjson_get_real(v));
+                } else if (v && yyjson_is_bool(v)) {
+                    yyjson_mut_arr_add_bool(doc, row, yyjson_get_bool(v));
+                } else {
+                    yyjson_mut_arr_add_null(doc, row);
+                }
+            }
+            if (pd) {
+                yyjson_doc_free(pd);
+            }
+        }
+        yyjson_mut_arr_add_val(cur_rows, row);
+    }
+    yyjson_mut_obj_add_val(doc, root, "groups", groups);
+    yyjson_mut_obj_add_bool(doc, root, "has_more", out->total > offset + out->count);
+}
+
 /* Emit semantic vector-search results as a TOON table. */
 static void emit_semantic_results_toon(cbm_sb_t *sb, const cbm_vector_result_t *vresults,
                                        int vcount) {
     static const char *const cols[] = {"qn", "label", "file", "score"};
-    cbm_toon_table_header(sb, "semantic", vcount, cols, 4);
+    cbm_tree_table_header(sb, "semantic", vcount, cols, 4);
     for (int v = 0; v < vcount; v++) {
-        cbm_toon_row_begin(sb);
-        cbm_toon_cell_str(sb, vresults[v].qualified_name, true);
-        cbm_toon_cell_str(sb, vresults[v].label, false);
-        cbm_toon_cell_str(sb, vresults[v].file_path, false);
-        cbm_toon_cell_real(sb, vresults[v].score, false);
-        cbm_toon_row_end(sb);
+        cbm_tree_row_begin(sb);
+        cbm_tree_cell_str(sb, vresults[v].qualified_name, true);
+        cbm_tree_cell_str(sb, vresults[v].label, false);
+        cbm_tree_cell_str(sb, vresults[v].file_path, false);
+        cbm_tree_cell_real(sb, vresults[v].score, false);
+        cbm_tree_row_end(sb);
     }
 }
 
@@ -2837,18 +2920,16 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
         return not_indexed;
     }
 
-    /* Response encoding: TOON tables by default (compact, header+rows).
+    /* Response encoding: grouped tree rows by default.
      * format:"json" restores the legacy verbose per-node objects; nested
      * neighbor lists (include_connected) need them, so they force JSON.
      * format:"tree" is the Phase-2 A/B candidate: rows grouped by
      * (qn-prefix, file) with the shared prefix printed once. */
     char *format_arg = cbm_mcp_get_string_arg(args, "format");
     bool legacy_json = format_arg && strcmp(format_arg, "json") == 0;
-    bool tree_format = format_arg && strcmp(format_arg, "tree") == 0;
     free(format_arg);
     if (cbm_mcp_get_bool_arg(args, "include_connected")) {
         legacy_json = true;
-        tree_format = false;
     }
 
     /* BM25 path: if `query` is set, run FTS5 full-text search with ranking
@@ -2941,14 +3022,13 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
                 cbm_store_search(store, &params, &tout);
                 /* Grouped tree output is THE default; the flat table remains
                  * only for detail:"ids" (single column — nothing to group). */
-                (void)tree_format;
                 if (detail_ids) {
                     emit_search_results_toon(&sb, &tout, offset, fields, nfields, detail_ids);
                 } else {
                     emit_search_results_tree(&sb, &tout, offset, fields, nfields);
                 }
                 if (core_fields_requested) {
-                    cbm_toon_scalar_str(
+                    cbm_tree_scalar_str(
                         &sb, "hint",
                         "some requested fields (file/name/qn/label/lines) are already core "
                         "row columns and were skipped — `fields` is for extra property "
@@ -2956,15 +3036,15 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
                 }
                 if (tout.total == 0) {
                     if (name_pattern && label) {
-                        cbm_toon_scalar_str(&sb, "hint",
+                        cbm_tree_scalar_str(&sb, "hint",
                                             "No results. Try removing the label filter or "
                                             "broadening the name_pattern regex.");
                     } else if (name_pattern) {
-                        cbm_toon_scalar_str(
+                        cbm_tree_scalar_str(
                             &sb, "hint",
                             "No nodes match this pattern. Check spelling or try a broader regex.");
                     } else if (label) {
-                        cbm_toon_scalar_str(&sb, "hint",
+                        cbm_tree_scalar_str(&sb, "hint",
                                             "No nodes with this label. Available labels: "
                                             "Function, Method, Class, Interface, Route, "
                                             "Variable, Module, Package, File, Folder.");
@@ -2975,8 +3055,8 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
                 emit_semantic_results_toon(&sb, vresults, vcount);
             } else if (semantic_only) {
                 static const char *const sem_cols[] = {"qn", "label", "file", "score"};
-                cbm_toon_table_header(&sb, "semantic", 0, sem_cols, 4);
-                cbm_toon_scalar_str(&sb, "hint",
+                cbm_tree_table_header(&sb, "semantic", 0, sem_cols, 4);
+                cbm_tree_scalar_str(&sb, "hint",
                                     "No semantic matches. semantic_query needs a moderate/full "
                                     "index; try broader or fewer keywords.");
             }
@@ -3025,8 +3105,23 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
 
     yyjson_doc **props_docs = NULL;
     int props_doc_count = 0;
-    emit_search_results(doc, root, &out, store, relationship, include_connected, offset,
-                        &props_docs, &props_doc_count);
+    if (include_connected) {
+        /* Nested neighbor lists keep the per-node object shape (the only
+         * remaining consumer of it; conversion tracked for the tree-json
+         * model's nested form). */
+        emit_search_results(doc, root, &out, store, relationship, include_connected, offset,
+                            &props_docs, &props_doc_count);
+    } else {
+        /* format:"json" = json-stringified tree: same grouped model as the
+         * default text output, structured for parsing. */
+        const char *jfields[SG_MAX_EXTRA_FIELDS];
+        yyjson_doc *jfields_owner = NULL;
+        int jnfields = sg_parse_fields(args, jfields, SG_MAX_EXTRA_FIELDS, &jfields_owner, NULL);
+        emit_search_results_tree_json(doc, root, &out, offset, jfields, jnfields);
+        if (jfields_owner) {
+            yyjson_doc_free(jfields_owner);
+        }
+    }
 
     /* Add diagnostic hint when zero results */
     if (out.total == 0) {
@@ -3157,21 +3252,21 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
     if (!qg_legacy_json) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
-        cbm_toon_table_header(&sb, "rows", result.row_count, (const char *const *)result.columns,
+        cbm_tree_table_header(&sb, "rows", result.row_count, (const char *const *)result.columns,
                               result.col_count);
         for (int r = 0; r < result.row_count; r++) {
-            cbm_toon_row_begin(&sb);
+            cbm_tree_row_begin(&sb);
             for (int c = 0; c < result.col_count; c++) {
-                cbm_toon_cell_str(&sb, result.rows[r][c], c == 0);
+                cbm_tree_cell_str(&sb, result.rows[r][c], c == 0);
             }
-            cbm_toon_row_end(&sb);
+            cbm_tree_row_end(&sb);
         }
-        cbm_toon_scalar_int(&sb, "total", result.row_count);
+        cbm_tree_scalar_int(&sb, "total", result.row_count);
         if (result.warning) {
-            cbm_toon_scalar_str(&sb, "warning", result.warning);
+            cbm_tree_scalar_str(&sb, "warning", result.warning);
         }
         if (result.row_count == 0) {
-            cbm_toon_scalar_str(&sb, "hint",
+            cbm_tree_scalar_str(&sb, "hint",
                                 "Query returned no results. Use get_graph_schema() to see "
                                 "available labels and edge types.");
         }
@@ -4062,7 +4157,7 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
     char norm_path[CBM_SZ_512];
     bool path_scoped = cbm_store_normalize_arch_path(scope_path, norm_path, sizeof(norm_path));
 
-    /* Response encoding: TOON tables by default; format:"json" restores the
+    /* Response encoding: tree tables by default; format:"json" emits the
      * legacy per-item objects. */
     char *arch_format = cbm_mcp_get_string_arg(args, "format");
     bool arch_legacy_json = arch_format && strcmp(arch_format, "json") == 0;
@@ -4072,172 +4167,172 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
         if (project) {
-            cbm_toon_scalar_str(&sb, "project", project);
+            cbm_tree_scalar_str(&sb, "project", project);
         }
         if (default_summary) {
-            cbm_toon_scalar_str(&sb, "aspects_hint",
+            cbm_tree_scalar_str(&sb, "aspects_hint",
                                 "Summary view (default). More on request via aspects:[...] — "
                                 "structure, dependencies, routes, hotspots, boundaries, layers, "
                                 "clusters, file_tree — or [\"all\"] for everything.");
         }
         if (path_scoped) {
-            cbm_toon_scalar_str(&sb, "path", norm_path);
-            cbm_toon_scalar_int(&sb, "root_total_nodes", cbm_store_count_nodes(store, project));
-            cbm_toon_scalar_int(&sb, "root_total_edges", cbm_store_count_edges(store, project));
-            cbm_toon_scalar_int(&sb, "scoped_total_nodes", node_count);
-            cbm_toon_scalar_int(&sb, "scoped_total_edges", edge_count);
+            cbm_tree_scalar_str(&sb, "path", norm_path);
+            cbm_tree_scalar_int(&sb, "root_total_nodes", cbm_store_count_nodes(store, project));
+            cbm_tree_scalar_int(&sb, "root_total_edges", cbm_store_count_edges(store, project));
+            cbm_tree_scalar_int(&sb, "scoped_total_nodes", node_count);
+            cbm_tree_scalar_int(&sb, "scoped_total_edges", edge_count);
         }
-        cbm_toon_scalar_int(&sb, "total_nodes", node_count);
-        cbm_toon_scalar_int(&sb, "total_edges", edge_count);
+        cbm_tree_scalar_int(&sb, "total_nodes", node_count);
+        cbm_tree_scalar_int(&sb, "total_edges", edge_count);
 
         if (aspect_wanted(aspects_doc, aspects_arr, "structure") && schema.node_label_count > 0) {
             static const char *const lcols[] = {"label", "count"};
-            cbm_toon_table_header(&sb, "node_labels", schema.node_label_count, lcols, 2);
+            cbm_tree_table_header(&sb, "node_labels", schema.node_label_count, lcols, 2);
             for (int i = 0; i < schema.node_label_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, schema.node_labels[i].label, true);
-                cbm_toon_cell_int(&sb, schema.node_labels[i].count, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, schema.node_labels[i].label, true);
+                cbm_tree_cell_int(&sb, schema.node_labels[i].count, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (aspect_wanted(aspects_doc, aspects_arr, "dependencies") && schema.edge_type_count > 0) {
             static const char *const tcols[] = {"type", "count"};
-            cbm_toon_table_header(&sb, "edge_types", schema.edge_type_count, tcols, 2);
+            cbm_tree_table_header(&sb, "edge_types", schema.edge_type_count, tcols, 2);
             for (int i = 0; i < schema.edge_type_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, schema.edge_types[i].type, true);
-                cbm_toon_cell_int(&sb, schema.edge_types[i].count, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, schema.edge_types[i].type, true);
+                cbm_tree_cell_int(&sb, schema.edge_types[i].count, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (aspect_wanted(aspects_doc, aspects_arr, "routes") && schema.rel_pattern_count > 0) {
             static const char *const pcols[] = {"pattern"};
-            cbm_toon_table_header(&sb, "relationship_patterns", schema.rel_pattern_count, pcols, 1);
+            cbm_tree_table_header(&sb, "relationship_patterns", schema.rel_pattern_count, pcols, 1);
             for (int i = 0; i < schema.rel_pattern_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, schema.rel_patterns[i], true);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, schema.rel_patterns[i], true);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.language_count > 0) {
             static const char *const gcols[] = {"language", "files"};
-            cbm_toon_table_header(&sb, "languages", arch.language_count, gcols, 2);
+            cbm_tree_table_header(&sb, "languages", arch.language_count, gcols, 2);
             for (int i = 0; i < arch.language_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.languages[i].language, true);
-                cbm_toon_cell_int(&sb, arch.languages[i].file_count, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.languages[i].language, true);
+                cbm_tree_cell_int(&sb, arch.languages[i].file_count, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.package_count > 0) {
             static const char *const kcols[] = {"name", "nodes", "fan_in", "fan_out"};
-            cbm_toon_table_header(&sb, "packages", arch.package_count, kcols, 4);
+            cbm_tree_table_header(&sb, "packages", arch.package_count, kcols, 4);
             for (int i = 0; i < arch.package_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.packages[i].name, true);
-                cbm_toon_cell_int(&sb, arch.packages[i].node_count, false);
-                cbm_toon_cell_int(&sb, arch.packages[i].fan_in, false);
-                cbm_toon_cell_int(&sb, arch.packages[i].fan_out, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.packages[i].name, true);
+                cbm_tree_cell_int(&sb, arch.packages[i].node_count, false);
+                cbm_tree_cell_int(&sb, arch.packages[i].fan_in, false);
+                cbm_tree_cell_int(&sb, arch.packages[i].fan_out, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.entry_point_count > 0) {
             /* qn only — `name` is its last segment. */
             static const char *const ecols[] = {"qn", "file"};
-            cbm_toon_table_header(&sb, "entry_points", arch.entry_point_count, ecols, 2);
+            cbm_tree_table_header(&sb, "entry_points", arch.entry_point_count, ecols, 2);
             for (int i = 0; i < arch.entry_point_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.entry_points[i].qualified_name, true);
-                cbm_toon_cell_str(&sb, arch.entry_points[i].file, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.entry_points[i].qualified_name, true);
+                cbm_tree_cell_str(&sb, arch.entry_points[i].file, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.route_count > 0) {
             static const char *const rcols[] = {"method", "path", "handler"};
-            cbm_toon_table_header(&sb, "routes", arch.route_count, rcols, 3);
+            cbm_tree_table_header(&sb, "routes", arch.route_count, rcols, 3);
             for (int i = 0; i < arch.route_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.routes[i].method, true);
-                cbm_toon_cell_str(&sb, arch.routes[i].path, false);
-                cbm_toon_cell_str(&sb, arch.routes[i].handler, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.routes[i].method, true);
+                cbm_tree_cell_str(&sb, arch.routes[i].path, false);
+                cbm_tree_cell_str(&sb, arch.routes[i].handler, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.hotspot_count > 0) {
             static const char *const hcols[] = {"qn", "fan_in"};
-            cbm_toon_table_header(&sb, "hotspots", arch.hotspot_count, hcols, 2);
+            cbm_tree_table_header(&sb, "hotspots", arch.hotspot_count, hcols, 2);
             for (int i = 0; i < arch.hotspot_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.hotspots[i].qualified_name, true);
-                cbm_toon_cell_int(&sb, arch.hotspots[i].fan_in, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.hotspots[i].qualified_name, true);
+                cbm_tree_cell_int(&sb, arch.hotspots[i].fan_in, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.boundary_count > 0) {
             static const char *const bcols[] = {"from", "to", "calls"};
-            cbm_toon_table_header(&sb, "boundaries", arch.boundary_count, bcols, 3);
+            cbm_tree_table_header(&sb, "boundaries", arch.boundary_count, bcols, 3);
             for (int i = 0; i < arch.boundary_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.boundaries[i].from, true);
-                cbm_toon_cell_str(&sb, arch.boundaries[i].to, false);
-                cbm_toon_cell_int(&sb, arch.boundaries[i].call_count, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.boundaries[i].from, true);
+                cbm_tree_cell_str(&sb, arch.boundaries[i].to, false);
+                cbm_tree_cell_int(&sb, arch.boundaries[i].call_count, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.service_count > 0) {
             static const char *const scols[] = {"from", "to", "type", "count"};
-            cbm_toon_table_header(&sb, "services", arch.service_count, scols, 4);
+            cbm_tree_table_header(&sb, "services", arch.service_count, scols, 4);
             for (int i = 0; i < arch.service_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.services[i].from, true);
-                cbm_toon_cell_str(&sb, arch.services[i].to, false);
-                cbm_toon_cell_str(&sb, arch.services[i].type, false);
-                cbm_toon_cell_int(&sb, arch.services[i].count, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.services[i].from, true);
+                cbm_tree_cell_str(&sb, arch.services[i].to, false);
+                cbm_tree_cell_str(&sb, arch.services[i].type, false);
+                cbm_tree_cell_int(&sb, arch.services[i].count, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.layer_count > 0) {
             static const char *const ycols[] = {"name", "layer", "reason"};
-            cbm_toon_table_header(&sb, "layers", arch.layer_count, ycols, 3);
+            cbm_tree_table_header(&sb, "layers", arch.layer_count, ycols, 3);
             for (int i = 0; i < arch.layer_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.layers[i].name, true);
-                cbm_toon_cell_str(&sb, arch.layers[i].layer, false);
-                cbm_toon_cell_str(&sb, arch.layers[i].reason, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.layers[i].name, true);
+                cbm_tree_cell_str(&sb, arch.layers[i].layer, false);
+                cbm_tree_cell_str(&sb, arch.layers[i].reason, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.cluster_count > 0) {
             /* Nested lists become ';'-joined cells. */
             static const char *const ccols[] = {"id",        "label",    "members",   "cohesion",
                                                 "top_nodes", "packages", "edge_types"};
-            cbm_toon_table_header(&sb, "clusters", arch.cluster_count, ccols, 7);
+            cbm_tree_table_header(&sb, "clusters", arch.cluster_count, ccols, 7);
             for (int i = 0; i < arch.cluster_count; i++) {
                 const cbm_cluster_info_t *c = &arch.clusters[i];
                 char joined[CBM_SZ_1K];
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_int(&sb, c->id, true);
-                cbm_toon_cell_str(&sb, c->label, false);
-                cbm_toon_cell_int(&sb, c->members, false);
-                cbm_toon_cell_real(&sb, c->cohesion, false);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_int(&sb, c->id, true);
+                cbm_tree_cell_str(&sb, c->label, false);
+                cbm_tree_cell_int(&sb, c->members, false);
+                cbm_tree_cell_real(&sb, c->cohesion, false);
                 arch_join_list(joined, sizeof(joined), c->top_nodes, c->top_node_count);
-                cbm_toon_cell_str(&sb, joined, false);
+                cbm_tree_cell_str(&sb, joined, false);
                 arch_join_list(joined, sizeof(joined), c->packages, c->package_count);
-                cbm_toon_cell_str(&sb, joined, false);
+                cbm_tree_cell_str(&sb, joined, false);
                 arch_join_list(joined, sizeof(joined), c->edge_types, c->edge_type_count);
-                cbm_toon_cell_str(&sb, joined, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_cell_str(&sb, joined, false);
+                cbm_tree_row_end(&sb);
             }
         }
         if (arch.file_tree_count > 0) {
             static const char *const fcols[] = {"path", "type", "children"};
-            cbm_toon_table_header(&sb, "file_tree", arch.file_tree_count, fcols, 3);
+            cbm_tree_table_header(&sb, "file_tree", arch.file_tree_count, fcols, 3);
             for (int i = 0; i < arch.file_tree_count; i++) {
-                cbm_toon_row_begin(&sb);
-                cbm_toon_cell_str(&sb, arch.file_tree[i].path, true);
-                cbm_toon_cell_str(&sb, arch.file_tree[i].type, false);
-                cbm_toon_cell_int(&sb, arch.file_tree[i].children, false);
-                cbm_toon_row_end(&sb);
+                cbm_tree_row_begin(&sb);
+                cbm_tree_cell_str(&sb, arch.file_tree[i].path, true);
+                cbm_tree_cell_str(&sb, arch.file_tree[i].type, false);
+                cbm_tree_cell_int(&sb, arch.file_tree[i].children, false);
+                cbm_tree_row_end(&sb);
             }
         }
         /* Cross-repo edge summary (mirrors append_cross_repo_summary). */
@@ -4255,7 +4350,7 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
                 }
             }
             if (cross_total > 0) {
-                cbm_toon_scalar_int(&sb, "cross_repo_links_total", cross_total);
+                cbm_tree_scalar_int(&sb, "cross_repo_links_total", cross_total);
             }
         }
 
@@ -4622,46 +4717,6 @@ static const char *bfs_edge_args_for_hop(cbm_traverse_result_t *tr, int64_t hop_
     return NULL;
 }
 
-static yyjson_mut_val *bfs_to_json_array(yyjson_mut_doc *doc, cbm_traverse_result_t *tr,
-                                         bool risk_labels, bool include_tests, bool data_flow) {
-    yyjson_mut_val *arr = yyjson_mut_arr(doc);
-    for (int i = 0; i < tr->visited_count; i++) {
-        const char *fp = tr->visited[i].node.file_path;
-        bool test = is_test_file(fp);
-        if (!include_tests && test) {
-            continue;
-        }
-        yyjson_mut_val *item = yyjson_mut_obj(doc);
-        yyjson_mut_obj_add_str(doc, item, "name",
-                               tr->visited[i].node.name ? tr->visited[i].node.name : "");
-        yyjson_mut_obj_add_str(
-            doc, item, "qualified_name",
-            tr->visited[i].node.qualified_name ? tr->visited[i].node.qualified_name : "");
-        yyjson_mut_obj_add_int(doc, item, "hop", tr->visited[i].hop);
-        if (risk_labels) {
-            yyjson_mut_obj_add_str(doc, item, "risk",
-                                   cbm_risk_label(cbm_hop_to_risk(tr->visited[i].hop)));
-        }
-        if (test) {
-            yyjson_mut_obj_add_bool(doc, item, "is_test", true);
-        }
-        /* data_flow mode promises argument expressions at each call site; surface
-         * the CALLS edge's serialized args array as a raw JSON value (#514). */
-        if (data_flow) {
-            size_t alen = 0;
-            const char *args = bfs_edge_args_for_hop(tr, tr->visited[i].node.id, &alen);
-            if (args && alen > 0) {
-                yyjson_mut_val *av = yyjson_mut_rawn(doc, args, alen);
-                if (av) {
-                    yyjson_mut_obj_add_val(doc, item, "args", av);
-                }
-            }
-        }
-        yyjson_mut_arr_add_val(arr, item);
-    }
-    return arr;
-}
-
 /* TOON table for one trace direction: callees[N]{qn,hop,...} with optional
  * risk / test / args columns. `name` is omitted (it is the qn's last
  * segment); the per-item JSON key envelope was 84% of the legacy payload. */
@@ -4685,21 +4740,21 @@ static void bfs_to_toon_table(cbm_sb_t *sb, const char *key, cbm_traverse_result
     if (data_flow) {
         cols[ncols++] = "args";
     }
-    cbm_toon_table_header(sb, key, visible, cols, ncols);
+    cbm_tree_table_header(sb, key, visible, cols, ncols);
     for (int i = 0; i < tr->visited_count; i++) {
         const char *fp = tr->visited[i].node.file_path;
         bool test = is_test_file(fp);
         if (!include_tests && test) {
             continue;
         }
-        cbm_toon_row_begin(sb);
-        cbm_toon_cell_str(sb, tr->visited[i].node.qualified_name, true);
-        cbm_toon_cell_int(sb, tr->visited[i].hop, false);
+        cbm_tree_row_begin(sb);
+        cbm_tree_cell_str(sb, tr->visited[i].node.qualified_name, true);
+        cbm_tree_cell_int(sb, tr->visited[i].hop, false);
         if (risk_labels) {
-            cbm_toon_cell_str(sb, cbm_risk_label(cbm_hop_to_risk(tr->visited[i].hop)), false);
+            cbm_tree_cell_str(sb, cbm_risk_label(cbm_hop_to_risk(tr->visited[i].hop)), false);
         }
         if (include_tests) {
-            cbm_toon_cell_bool(sb, test, false);
+            cbm_tree_cell_bool(sb, test, false);
         }
         if (data_flow) {
             size_t alen = 0;
@@ -4708,12 +4763,12 @@ static void bfs_to_toon_table(cbm_sb_t *sb, const char *key, cbm_traverse_result
                 char abuf[CBM_SZ_1K];
                 memcpy(abuf, ea, alen);
                 abuf[alen] = '\0';
-                cbm_toon_cell_str(sb, abuf, false);
+                cbm_tree_cell_str(sb, abuf, false);
             } else {
-                cbm_toon_cell_str(sb, "", false);
+                cbm_tree_cell_str(sb, "", false);
             }
         }
-        cbm_toon_row_end(sb);
+        cbm_tree_row_end(sb);
     }
 }
 
@@ -4992,6 +5047,71 @@ static int trace_watermark_index(const cbm_traverse_result_t *tr, int hop, int64
     return tr->visited_count;
 }
 
+/* json-stringified tree for one trace leg: same grouped model as the text
+ * output — {cols, groups:[{qn_prefix, rows:[[name,hop,...]]}]}. Optional
+ * risk/args columns mirror the flags. */
+static yyjson_mut_val *bfs_to_tree_json(yyjson_mut_doc *doc, cbm_traverse_result_t *tr,
+                                        bool risk_labels, bool include_tests, bool data_flow) {
+    yyjson_mut_val *leg = yyjson_mut_obj(doc);
+    yyjson_mut_val *cols = yyjson_mut_arr(doc);
+    yyjson_mut_arr_add_str(doc, cols, "name");
+    yyjson_mut_arr_add_str(doc, cols, "hop");
+    if (risk_labels) {
+        yyjson_mut_arr_add_str(doc, cols, "risk");
+    }
+    if (data_flow) {
+        yyjson_mut_arr_add_str(doc, cols, "args");
+    }
+    yyjson_mut_obj_add_val(doc, leg, "cols", cols);
+    yyjson_mut_val *groups = yyjson_mut_arr(doc);
+    yyjson_mut_val *cur_rows = NULL;
+    char cur_group[CBM_SZ_1K] = "";
+    bool have_group = false;
+    for (int i = 0; i < tr->visited_count; i++) {
+        if (!include_tests && is_test_file(tr->visited[i].node.file_path)) {
+            continue;
+        }
+        const char *qn =
+            tr->visited[i].node.qualified_name ? tr->visited[i].node.qualified_name : "";
+        size_t plen = sg_qn_prefix_len(qn);
+        if (plen >= sizeof(cur_group)) {
+            plen = 0;
+        }
+        if (!have_group || strncmp(cur_group, qn, plen) != 0 || cur_group[plen] != '\0') {
+            snprintf(cur_group, sizeof(cur_group), "%.*s", (int)plen, qn);
+            have_group = true;
+            yyjson_mut_val *g = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_strcpy(doc, g, "qn_prefix", cur_group);
+            cur_rows = yyjson_mut_arr(doc);
+            yyjson_mut_obj_add_val(doc, g, "rows", cur_rows);
+            yyjson_mut_arr_add_val(groups, g);
+        }
+        yyjson_mut_val *row = yyjson_mut_arr(doc);
+        yyjson_mut_arr_add_strcpy(doc, row, plen ? qn + plen + 1 : qn);
+        yyjson_mut_arr_add_int(doc, row, tr->visited[i].hop);
+        if (risk_labels) {
+            yyjson_mut_arr_add_str(doc, row, cbm_risk_label(cbm_hop_to_risk(tr->visited[i].hop)));
+        }
+        if (data_flow) {
+            size_t alen = 0;
+            const char *ea = bfs_edge_args_for_hop(tr, tr->visited[i].node.id, &alen);
+            if (ea && alen > 0) {
+                yyjson_mut_val *av = yyjson_mut_rawn(doc, ea, alen);
+                if (av) {
+                    yyjson_mut_arr_add_val(row, av);
+                } else {
+                    yyjson_mut_arr_add_str(doc, row, "");
+                }
+            } else {
+                yyjson_mut_arr_add_str(doc, row, "");
+            }
+        }
+        yyjson_mut_arr_add_val(cur_rows, row);
+    }
+    yyjson_mut_obj_add_val(doc, leg, "groups", groups);
+    return leg;
+}
+
 /* Tree-format trace leg: rows grouped by qn-prefix (printed once), each row
  * `name hop` — same data as the TOON table, prefix-factored. Test-file rows
  * honor include_tests exactly like bfs_to_toon_table. Rows arrive in
@@ -5219,12 +5339,11 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
         return result;
     }
 
-    /* Response encoding: TOON tables by default; format:"json" restores the
+    /* Response encoding: tree tables by default; format:"json" emits the
      * legacy verbose per-hop objects; format:"tree" = Phase-2 A/B candidate
      * (qn-prefix-grouped rows). */
     char *trace_format = cbm_mcp_get_string_arg(args, "format");
     bool trace_legacy_json = trace_format && strcmp(trace_format, "json") == 0;
-    bool trace_tree = trace_format && strcmp(trace_format, "tree") == 0;
     free(trace_format);
 
     /* Edge types: explicit > mode-based > default */
@@ -5323,17 +5442,16 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
     if (!trace_legacy_json) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
-        cbm_toon_scalar_str(&sb, "function", func_name);
-        cbm_toon_scalar_str(&sb, "direction", direction);
+        cbm_tree_scalar_str(&sb, "function", func_name);
+        cbm_tree_scalar_str(&sb, "direction", direction);
         if (mode) {
-            cbm_toon_scalar_str(&sb, "mode", mode);
+            cbm_tree_scalar_str(&sb, "mode", mode);
         }
         /* Grouped tree is THE default; risk_labels/data_flow keep the flat
          * table (extra columns) in the same tree syntax. */
-        (void)trace_tree;
         bool flat_trace = risk_labels || data_flow;
         if (do_outbound) {
-            cbm_toon_scalar_int(&sb, "callees_total", tr_out.visited_count);
+            cbm_tree_scalar_int(&sb, "callees_total", tr_out.visited_count);
             if (flat_trace) {
                 bfs_to_toon_table(&sb, "callees", &view_out, risk_labels, include_tests, data_flow);
             } else {
@@ -5341,7 +5459,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             }
         }
         if (do_inbound) {
-            cbm_toon_scalar_int(&sb, "callers_total", tr_in.visited_count);
+            cbm_tree_scalar_int(&sb, "callers_total", tr_in.visited_count);
             if (flat_trace) {
                 bfs_to_toon_table(&sb, "callers", &view_in, risk_labels, include_tests, data_flow);
             } else {
@@ -5349,9 +5467,9 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             }
         }
         if (next_tok[0]) {
-            cbm_toon_scalar_bool(&sb, "truncated", true);
-            cbm_toon_scalar_str(&sb, "next", next_tok);
-            cbm_toon_scalar_str(&sb, "hint",
+            cbm_tree_scalar_bool(&sb, "truncated", true);
+            cbm_tree_scalar_str(&sb, "next", next_tok);
+            cbm_tree_scalar_str(&sb, "hint",
                                 "more rows exist — re-call with cursor set to 'next' and ALL "
                                 "other arguments identical (no duplicates), or narrow with "
                                 "depth/edge_types");
@@ -5371,13 +5489,13 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             yyjson_mut_obj_add_int(doc, root, "callees_total", tr_out.visited_count);
             yyjson_mut_obj_add_val(
                 doc, root, "callees",
-                bfs_to_json_array(doc, &view_out, risk_labels, include_tests, data_flow));
+                bfs_to_tree_json(doc, &view_out, risk_labels, include_tests, data_flow));
         }
         if (do_inbound) {
             yyjson_mut_obj_add_int(doc, root, "callers_total", tr_in.visited_count);
             yyjson_mut_obj_add_val(
                 doc, root, "callers",
-                bfs_to_json_array(doc, &view_in, risk_labels, include_tests, data_flow));
+                bfs_to_tree_json(doc, &view_in, risk_labels, include_tests, data_flow));
         }
         if (next_tok[0]) {
             yyjson_mut_obj_add_bool(doc, root, "truncated", true);
@@ -7172,7 +7290,7 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
 
     int output_count = sr_count < limit ? sr_count : limit;
     static const char *const cols[] = {"qn", "label", "file", "lines", "matches", "in", "out"};
-    cbm_toon_table_header(&sb, "results", output_count, cols, 7);
+    cbm_tree_table_header(&sb, "results", output_count, cols, 7);
     for (int ri = 0; ri < output_count; ri++) {
         search_result_t *r = &sr[ri];
         char lines[CBM_SZ_32];
@@ -7194,27 +7312,27 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
             }
             mpos += (size_t)n;
         }
-        cbm_toon_row_begin(&sb);
-        cbm_toon_cell_str(&sb, r->qualified_name, true);
-        cbm_toon_cell_str(&sb, r->label, false);
-        cbm_toon_cell_str(&sb, r->file, false);
-        cbm_toon_cell_str(&sb, lines, false);
-        cbm_toon_cell_str(&sb, matches, false);
-        cbm_toon_cell_int(&sb, r->in_degree, false);
-        cbm_toon_cell_int(&sb, r->out_degree, false);
-        cbm_toon_row_end(&sb);
+        cbm_tree_row_begin(&sb);
+        cbm_tree_cell_str(&sb, r->qualified_name, true);
+        cbm_tree_cell_str(&sb, r->label, false);
+        cbm_tree_cell_str(&sb, r->file, false);
+        cbm_tree_cell_str(&sb, lines, false);
+        cbm_tree_cell_str(&sb, matches, false);
+        cbm_tree_cell_int(&sb, r->in_degree, false);
+        cbm_tree_cell_int(&sb, r->out_degree, false);
+        cbm_tree_row_end(&sb);
     }
 
     int raw_output = raw_count < MAX_RAW ? raw_count : MAX_RAW;
     if (raw_output > 0) {
         static const char *const rcols[] = {"file", "line", "content"};
-        cbm_toon_table_header(&sb, "raw", raw_output, rcols, 3);
+        cbm_tree_table_header(&sb, "raw", raw_output, rcols, 3);
         for (int ri = 0; ri < raw_output; ri++) {
-            cbm_toon_row_begin(&sb);
-            cbm_toon_cell_str(&sb, raw[ri].file, true);
-            cbm_toon_cell_int(&sb, raw[ri].line, false);
-            cbm_toon_cell_str(&sb, raw[ri].content, false);
-            cbm_toon_row_end(&sb);
+            cbm_tree_row_begin(&sb);
+            cbm_tree_cell_str(&sb, raw[ri].file, true);
+            cbm_tree_cell_int(&sb, raw[ri].line, false);
+            cbm_tree_cell_str(&sb, raw[ri].content, false);
+            cbm_tree_row_end(&sb);
         }
     }
 
@@ -7223,27 +7341,27 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
     int dir_n = aggregate_search_dirs(sr, sr_count, dir_names, dir_counts, CBM_SZ_64);
     if (dir_n > 0) {
         static const char *const dcols[] = {"dir", "hits"};
-        cbm_toon_table_header(&sb, "dirs", dir_n, dcols, 2);
+        cbm_tree_table_header(&sb, "dirs", dir_n, dcols, 2);
         for (int d = 0; d < dir_n; d++) {
-            cbm_toon_row_begin(&sb);
-            cbm_toon_cell_str(&sb, dir_names[d], true);
-            cbm_toon_cell_int(&sb, dir_counts[d], false);
-            cbm_toon_row_end(&sb);
+            cbm_tree_row_begin(&sb);
+            cbm_tree_cell_str(&sb, dir_names[d], true);
+            cbm_tree_cell_int(&sb, dir_counts[d], false);
+            cbm_tree_row_end(&sb);
         }
     }
 
-    cbm_toon_scalar_int(&sb, "total_grep_matches", gm_count);
-    cbm_toon_scalar_int(&sb, "total_results", sr_count);
-    cbm_toon_scalar_int(&sb, "raw_match_count", raw_count);
-    cbm_toon_scalar_int(&sb, "elapsed_ms", (long long)elapsed_ms);
+    cbm_tree_scalar_int(&sb, "total_grep_matches", gm_count);
+    cbm_tree_scalar_int(&sb, "total_results", sr_count);
+    cbm_tree_scalar_int(&sb, "raw_match_count", raw_count);
+    cbm_tree_scalar_int(&sb, "elapsed_ms", (long long)elapsed_ms);
     if (warn_literal_pipe) {
-        cbm_toon_scalar_str(&sb, "warning",
+        cbm_tree_scalar_str(&sb, "warning",
                             "pattern contains '|' but regex=false, so it is matched literally "
                             "(not as alternation). Pass regex=true for 'foo|bar' to mean "
                             "'foo OR bar'.");
     }
     if (elapsed_ms >= SEARCH_SLOW_MS) {
-        cbm_toon_scalar_str(&sb, "warning_slow",
+        cbm_tree_scalar_str(&sb, "warning_slow",
                             "search was slow; narrow file_pattern/path_filter or use a more "
                             "specific pattern");
     }
@@ -7910,7 +8028,7 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
 
     /* ── Phase 4: Context assembly (extracted helper) ─────────── */
 
-    /* compact mode (default) emits TOON tables; format:"json" restores the
+    /* compact mode (default) emits tree tables; format:"json" keeps the
      * legacy per-hit objects. full/files keep their JSON shapes (full is
      * source-block-heavy; files is already minimal). */
     char *sc_format = cbm_mcp_get_string_arg(args, "format");

@@ -1132,18 +1132,24 @@ TEST(tool_search_graph_includes_node_properties) {
     free(inner);
     free(resp);
 
-    /* format:"json" keeps the legacy verbose objects intact. */
+    /* format:"json" = json-stringified tree: same grouped model, column-
+     * ordered row arrays — never per-row key envelopes or property blobs.
+     * fields adds columns there too. */
     resp = cbm_mcp_server_handle(
         srv, "{\"jsonrpc\":\"2.0\",\"id\":44,\"method\":\"tools/call\","
              "\"params\":{\"name\":\"search_graph\","
              "\"arguments\":{\"project\":\"test-project\",\"label\":\"Function\","
-             "\"name_pattern\":\"HandleRequest\",\"format\":\"json\",\"limit\":5}}}");
+             "\"name_pattern\":\"HandleRequest\",\"format\":\"json\","
+             "\"fields\":[\"signature\"],\"limit\":5}}}");
     ASSERT_NOT_NULL(resp);
     inner = extract_text_content(resp);
     ASSERT_NOT_NULL(inner);
-    ASSERT_NOT_NULL(strstr(inner, "\"signature\""));
-    ASSERT_NOT_NULL(strstr(inner, "func HandleRequest"));
-    ASSERT_NOT_NULL(strstr(inner, "is_exported"));
+    ASSERT_NOT_NULL(strstr(inner, "\"qn_prefix\"")); /* grouped tree model */
+    ASSERT_NOT_NULL(strstr(inner, "\"cols\""));
+    ASSERT_NOT_NULL(strstr(inner, "\"rows\""));
+    ASSERT_NOT_NULL(strstr(inner, "\"signature\""));      /* requested column */
+    ASSERT_NOT_NULL(strstr(inner, "func HandleRequest")); /* its value */
+    ASSERT_NULL(strstr(inner, "is_exported"));            /* blob never spills */
     free(inner);
     free(resp);
 
